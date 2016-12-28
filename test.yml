@@ -1,0 +1,45 @@
+---
+global:
+  organization: "BSC"
+
+team:
+  name: TEAM_AIC
+  users:
+    - username: bidule
+      email: bidule@machin.com
+      first_name: Bi
+      last_name: DULE
+      password: "mypass"
+    - username: machin
+      email: machin@machin.com
+      first_name: Ma
+      last_name: CHIN
+      password: "mypass"
+
+projects:
+  - name: PROJECT_AICD_SRC
+    scm_url: https://github.com/moncompte/monprojet
+
+credentials:
+  - name: CRED_SERVER_AICD
+    username: automation
+    vault_password: "sdfgsdkfjgndkj"
+
+inventories:
+  - name: INV_AIC_SRC_DI
+    team_permission: read
+    groups:
+      - name: dev
+        hosts:
+          - name: daiclx01
+          - name: daiclx02
+          - name: daiclx11
+          - name: daiclx12
+      - name: FRONT
+        hosts:
+          - name: daiclx01
+          - name: daiclx02
+      - name: BACK
+        hosts:
+          - name: daiclx11
+          - name: daiclx12
