@@ -69,6 +69,7 @@ def generate_ssh_key(password, bits=SSH_KEY_BITS):
 class TowerResource(object):
     role_res = tower_cli.get_resource('role')
     resource_types = ['project', 'inventory', 'job_template', 'credential']
+    role_types = ['admin', 'read', 'member', 'owner', 'execute', 'adhoc', 'update', 'use', 'auditor']
 
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -90,6 +91,11 @@ class TowerResource(object):
             :type role_type: string
         """
         if resource_type not in self.resource_types:
+            red('Granting permission failed, unknown resource type {}'.format(resource_type))
+            return
+
+        if role_type not in self.role_types:
+            red('Granting permission failed, unknown permission type {}'.format(role_type))
             return
 
         if indent_level < 0:
@@ -165,6 +171,15 @@ class TowerCredential(TowerResource):
     def create(cls, **entries):
         return cls(**cls.cred_res.create(**entries))
 
+    @classmethod
+    def get(cls, cred_name):
+        return cls(**cls.cred_res.get(name=cred_name))
+
+    def save(self):
+        print(self.id)
+        print(self.__dict__)
+        self.cred_res.modify(pk=self.id, **self.__dict__)
+
     def authorize_team(self, team):
         self.grant_permission(team, 'credential', self, indent_level=1)
 
@@ -199,8 +214,6 @@ class TowerInventoryHost(TowerResource):
         self.host_res.associate(self.id, group_id)
 
 class TowerManager(object):
-    role_types = ['admin', 'read', 'member', 'owner', 'execute', 'adhoc', 'update', 'use', 'auditor']
-
     job_tmpl_res = tower_cli.get_resource('job_template')
 
     def __init__(self):
@@ -223,9 +236,9 @@ class TowerManager(object):
             green('ok')
             self.users[new_user.username] = new_user
 
-    def _create_team(self, team_name):
-        team_data = dict(organization=self.org.id, name=team_name,
-                         description=team_name + ' project team')
+    def _create_team(self, team_data):
+        team_data.update(dict(organization=self.org.id,
+                         description=team_data.get('description', team_data['name'] + ' project team')))
         print()
         gray('Creating {description}...'.format(**team_data), end='')
         self.team = TowerTeam.create(**team_data)
@@ -235,30 +248,51 @@ class TowerManager(object):
         print()
         for prj in projects:
             gray('Creating project {name}...'.format(**prj), end='')
-            project_data = dict(scm_type='git', scm_url=prj['scm_url'], name=prj['name'],
-                                organization=self.org.id, scm_clean=True,
-                                scm_update_on_launch=True, scm_delete_on_update=True)
-            new_prj = TowerProject.create(**project_data)
+            prj.update(dict(scm_type=prj.get('scm_type', 'git'),
+                            organization=self.org.id,
+                            scm_clean=prj.get('scm_clean', True),
+                            scm_update_on_launch=prj.get('scm_update_on_launch', True),
+                            scm_delete_on_update=prj.get('scm_delete_on_update', True)))
+            new_prj = TowerProject.create(**prj)
             self.projects[prj['name']] = new_prj
             green('ok')
             new_prj.authorize_team(self.team)
 
     def _create_credentials(self, credentials):
         for cred in credentials:
+            force_update = cred.get('force_update', False)
+            try:
+                existing_cred = TowerCredential.get(cred['name'])
+                already_exists = True
+            except tower_cli.utils.exceptions.NotFound:
+                already_exists = False
             print()
-            gray('Generate password protected ssh key for {name}...'.format(**cred), end='')
-            ssh_key = generate_ssh_key(password_gen())
-            green('ok')
-            with open(cred['name'] + '.pub', 'w') as ssh_pub_file:
-                ssh_pub_file.write(ssh_key['public'])
-            yellow('SSH public key written to : ', end='')
-            green(cred['name'] + '.pub')
-            gray('Creating credential {name}...'.format(**cred), end='')
-            cred_data = dict(kind='ssh', name=cred['name'], organization=self.org.id,
-                             username=cred['username'], ssh_key_data=ssh_key['private'],
-                             ssh_key_unlock=ssh_key['password'],
-                             vault_password=cred.get('vault_password', password_gen()))
-            new_cred = TowerCredential.create(**cred_data)
+            if force_update or not already_exists:
+                gray('Generate password protected ssh key for {username}@{name}...'.format(**cred), end='')
+                ssh_key = generate_ssh_key(password_gen())
+                green('ok')
+                with open(cred['name'] + '.pub', 'w') as ssh_pub_file:
+                    ssh_pub_file.write(ssh_key['public'])
+                yellow('SSH public key written to : ', end='')
+                green(cred['name'] + '.pub')
+                gray('Creating credential {name}...'.format(**cred), end='')
+                if not already_exists:
+                    cred.update(dict(organization=self.org.id, ssh_key_data=ssh_key['private'],
+                                    ssh_key_unlock=ssh_key['password'],
+                                    kind=cred.get('kind', 'ssh'),
+                                    vault_password=cred.get('vault_password', password_gen())))
+                    new_cred = TowerCredential.create(**cred)
+                else:
+#                    existing_cred.organization=self.org.id
+                    existing_cred.username=cred['username']
+                    existing_cred.ssh_key_data=ssh_key['private']
+                    existing_cred.ssh_key_unlock=ssh_key['password']
+#                    existing_cred.kind=cred.get('kind', 'ssh')
+#                    existing_cred.vault_password=cred.get('vault_password', password_gen())
+                    existing_cred.save()
+                    new_cred = existing_cred
+            else:
+                gray('Credential {name} already exists, skipping...'.format(**cred), end='')
             self.credentials[cred['name']] = new_cred
             green('ok')
             new_cred.authorize_team(self.team)
@@ -295,7 +329,7 @@ class TowerManager(object):
             except tower_cli.utils.exceptions.NotFound:
                 return
 
-        self._create_team(import_data['team']['name'])
+        self._create_team(import_data['team'])
         self._create_users(import_data['team'].get('users', []))
         self.team.associate_users(self.users)
         self._create_projects(import_data.get('projects', []))

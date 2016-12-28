@@ -22,8 +22,9 @@ projects:
 
 credentials:
   - name: CRED_SERVER_AICD
-    username: automation
+    username: trucmuche
     vault_password: "sdfgsdkfjgndkj"
+    force_update: true
 
 inventories:
   - name: INV_AIC_SRC_DI
