@@ -16,9 +16,16 @@ team:
       last_name: CHIN
       password: "mypass"
 
+job_templates:
+  - name: JOB_AIC_SRC_DI
+    inventory: INV_AIC_SRC_DI
+    credential: CRED_SERVER_AICD
+    project: PROJECT_AICD_SRC
+    playbook: deploy.yml
+
 projects:
   - name: PROJECT_AICD_SRC
-    scm_url: https://github.com/moncompte/monprojet
+    scm_url: https://github.com/bbasleeper/tower
 
 credentials:
   - name: CRED_SERVER_AICD
@@ -32,15 +39,15 @@ inventories:
     groups:
       - name: dev
         hosts:
-          - name: daiclx01
-          - name: daiclx02
-          - name: daiclx11
-          - name: daiclx12
+          - name: target01
+          - name: target02
+          - name: target11
+          - name: target12
       - name: FRONT
         hosts:
-          - name: daiclx01
-          - name: daiclx02
+          - name: target01
+          - name: target02
       - name: BACK
         hosts:
-          - name: daiclx11
-          - name: daiclx12
+          - name: target11
+          - name: target12

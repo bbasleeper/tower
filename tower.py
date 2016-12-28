@@ -136,8 +136,15 @@ class TowerProject(TowerResource):
     def create(cls, **entries):
         return cls(**cls.project_res.create(**entries))
 
+    @classmethod
+    def get(cls, prj_name):
+        return cls(**cls.project_res.get(name=prj_name))
+
     def authorize_team(self, team):
         self.grant_permission(team, 'project', self, indent_level=1)
+
+    def sync(self):
+        self.project_res.update(pk=self.id)
 
 
 class TowerUser(TowerResource):
@@ -176,8 +183,6 @@ class TowerCredential(TowerResource):
         return cls(**cls.cred_res.get(name=cred_name))
 
     def save(self):
-        print(self.id)
-        print(self.__dict__)
         self.cred_res.modify(pk=self.id, **self.__dict__)
 
     def authorize_team(self, team):
@@ -190,6 +195,10 @@ class TowerInventory(TowerResource):
     @classmethod
     def create(cls, **entries):
         return cls(**cls.inv_res.create(**entries))
+
+    @classmethod
+    def get(cls, inv_name):
+        return cls(**cls.inv_res.get(name=inv_name))
 
     def authorize_team(self, team, permission='read'):
         self.grant_permission(team, 'inventory', self, role_type=permission, indent_level=1)
@@ -213,17 +222,23 @@ class TowerInventoryHost(TowerResource):
     def add_to_group(self, group_id):
         self.host_res.associate(self.id, group_id)
 
-class TowerManager(object):
+
+class TowerJobTemplate(TowerResource):
     job_tmpl_res = tower_cli.get_resource('job_template')
 
+    @classmethod
+    def create(cls, **entries):
+        return cls(**cls.job_tmpl_res.create(**entries))
+
+class TowerManager(object):
     def __init__(self):
         self.org = None
         self.team = None
         self.users = {}
         self.credentials = {}
-        self.inventories = []
+        self.inventories = {}
         self.projects = {}
-        self.job_templates = []
+        self.job_templates = {}
 
     def _create_users(self, userlist):
         print()
@@ -297,8 +312,9 @@ class TowerManager(object):
             green('ok')
             new_cred.authorize_team(self.team)
 
-    def _create_inventories(self, inventories):
-        for inv in inventories:
+    def _create_inventories(self, invlist):
+        self.inventories = {}
+        for inv in invlist:
             print()
             gray('Creating inventory {name}...'.format(**inv), end='')
             inv['organization'] = self.org.id
@@ -316,6 +332,23 @@ class TowerManager(object):
                     new_host.add_to_group(new_group.id)
                     green('ok')
             new_inv.authorize_team(self.team)
+            self.inventories[new_inv.name] = new_inv
+
+    def _create_job_templates(self, templates):
+        self.job_templates = {}
+        for template in templates:
+            print()
+            gray('Creating job template {name}...'.format(**template), end='')
+            template['organization'] = self.org.id
+            try:
+                template['credential'] = TowerCredential.get(template['credential']).id
+                template['inventory'] = TowerInventory.get(template['inventory']).id
+                template['project'] = TowerProject.get(template['project']).id
+                new_job_template = TowerJobTemplate.create(**template)
+                green('ok')
+            except tower_cli.utils.exceptions.NotFound:
+                red('failed')
+            self.job_templates[new_job_template.name] = new_job_template
 
     def load(self, filename):
         with open(filename) as import_file:
@@ -335,6 +368,7 @@ class TowerManager(object):
         self._create_projects(import_data.get('projects', []))
         self._create_credentials(import_data.get('credentials', []))
         self._create_inventories(import_data.get('inventories', []))
+        self._create_job_templates(import_data.get('job_templates', []))
 
     def save(self, org, trigram, filename):
         pass
