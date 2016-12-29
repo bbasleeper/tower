@@ -5,6 +5,8 @@ from __future__ import print_function
 
 import sys
 import os
+import time
+import argparse
 import tempfile
 import string
 import random
@@ -14,8 +16,17 @@ import tower_cli
 from paramiko.rsakey import RSAKey
 
 # Constants
+HELP_MSG = 'Import/Export Ansible Tower resources (teams, users, projects, credentials, \
+            inventories and job templates)'
+USAGE = '''tower <command> <args>
+
+command can be :
+load    Load data from a given file to Ansible Tower
+dump    Dump data from Ansible Tower to a given file
+'''
 BSC_ORG = 'BSC'
 SSH_KEY_BITS = 2048
+PROJECT_SYNC_WAIT_TIME = 15
 EDGE_DEFAULT_USER = 'automation'
 ROLE_TYPES = ['admin', 'read', 'member', 'owner', 'execute', 'adhoc', 'update', 'use', 'auditor']
 RESOURCE_TYPES = ['project', 'inventory', 'job_template', 'credential']
@@ -35,20 +46,26 @@ ROLE_RES = tower_cli.get_resource('role')
 def red(text, end='\n'):
     print("\033[91m {}\033[00m" .format(text), end=end)
 
+
 def green(text, end='\n'):
     print("\033[92m {}\033[00m" .format(text), end=end)
+
 
 def yellow(text, end='\n'):
     print("\033[93m {}\033[00m" .format(text), end=end)
 
+
 def blue(text, end='\n'):
     print("\033[96m {}\033[00m" .format(text), end=end)
+
 
 def gray(text, end='\n'):
     print("\033[97m {}\033[00m" .format(text), end=end)
 
+
 def password_gen(size=14, chars=string.ascii_letters + string.digits + string.punctuation):
     return ''.join(random.choice(chars) for _ in range(size))
+
 
 def generate_ssh_key(password, bits=SSH_KEY_BITS):
     rsakey = RSAKey.generate(bits)
@@ -69,7 +86,8 @@ def generate_ssh_key(password, bits=SSH_KEY_BITS):
 class TowerResource(object):
     role_res = tower_cli.get_resource('role')
     resource_types = ['project', 'inventory', 'job_template', 'credential']
-    role_types = ['admin', 'read', 'member', 'owner', 'execute', 'adhoc', 'update', 'use', 'auditor']
+    role_types = ['admin', 'read', 'member', 'owner', 'execute', 'adhoc', 'update',
+                  'use', 'auditor']
 
     def __init__(self, **entries):
         self.__dict__.update(entries)
@@ -106,16 +124,15 @@ class TowerResource(object):
         if indent_level == 0:
             print()
             yellow('Granting {} on {} {} to team {}...'
-                .format(role_type, resource_type, resource.name, team.name),
-                end='')
+                   .format(role_type, resource_type, resource.name, team.name),
+                   end='')
         else:
             gray('\t' * indent_level, end='')
             yellow('Granting {} permission to team {}...'
-                .format(role_type, team.name),
-                end='')
+                   .format(role_type, team.name),
+                   end='')
         self.role_res.grant(**role_data)
         green('ok')
-
 
 
 class TowerOrganization(TowerResource):
@@ -145,6 +162,8 @@ class TowerProject(TowerResource):
 
     def sync(self):
         self.project_res.update(pk=self.id)
+        yellow('Waiting {} seconds for project syncing...'.format(PROJECT_SYNC_WAIT_TIME))
+        time.sleep(PROJECT_SYNC_WAIT_TIME)
 
 
 class TowerUser(TowerResource):
@@ -230,6 +249,7 @@ class TowerJobTemplate(TowerResource):
     def create(cls, **entries):
         return cls(**cls.job_tmpl_res.create(**entries))
 
+
 class TowerManager(object):
     def __init__(self):
         self.org = None
@@ -253,7 +273,8 @@ class TowerManager(object):
 
     def _create_team(self, team_data):
         team_data.update(dict(organization=self.org.id,
-                         description=team_data.get('description', team_data['name'] + ' project team')))
+                         description=team_data.get('description',
+                                                   team_data['name'] + ' project team')))
         print()
         gray('Creating {description}...'.format(**team_data), end='')
         self.team = TowerTeam.create(**team_data)
@@ -271,6 +292,7 @@ class TowerManager(object):
             new_prj = TowerProject.create(**prj)
             self.projects[prj['name']] = new_prj
             green('ok')
+            new_prj.sync()
             new_prj.authorize_team(self.team)
 
     def _create_credentials(self, credentials):
@@ -283,7 +305,8 @@ class TowerManager(object):
                 already_exists = False
             print()
             if force_update or not already_exists:
-                gray('Generate password protected ssh key for {username}@{name}...'.format(**cred), end='')
+                gray('Generate password protected ssh key for {username}@{name}...'.format(**cred),
+                     end='')
                 ssh_key = generate_ssh_key(password_gen())
                 green('ok')
                 with open(cred['name'] + '.pub', 'w') as ssh_pub_file:
@@ -293,17 +316,17 @@ class TowerManager(object):
                 gray('Creating credential {name}...'.format(**cred), end='')
                 if not already_exists:
                     cred.update(dict(organization=self.org.id, ssh_key_data=ssh_key['private'],
-                                    ssh_key_unlock=ssh_key['password'],
-                                    kind=cred.get('kind', 'ssh'),
-                                    vault_password=cred.get('vault_password', password_gen())))
+                                     ssh_key_unlock=ssh_key['password'],
+                                     kind=cred.get('kind', 'ssh'),
+                                     vault_password=cred.get('vault_password', password_gen())))
                     new_cred = TowerCredential.create(**cred)
                 else:
-#                    existing_cred.organization=self.org.id
-                    existing_cred.username=cred['username']
-                    existing_cred.ssh_key_data=ssh_key['private']
-                    existing_cred.ssh_key_unlock=ssh_key['password']
-#                    existing_cred.kind=cred.get('kind', 'ssh')
-#                    existing_cred.vault_password=cred.get('vault_password', password_gen())
+                    # existing_cred.organization = self.org.id
+                    existing_cred.username = cred['username']
+                    existing_cred.ssh_key_data = ssh_key['private']
+                    existing_cred.ssh_key_unlock = ssh_key['password']
+                    # existing_cred.kind = cred.get('kind', 'ssh')
+                    # existing_cred.vault_password = cred.get('vault_password', password_gen())
                     existing_cred.save()
                     new_cred = existing_cred
             else:
@@ -354,8 +377,8 @@ class TowerManager(object):
         with open(filename) as import_file:
             import_data = yaml.load(import_file.read())
 
-        if 'global' in import_data and 'team' in import_data \
-            and 'name' in import_data['team']:
+        if 'global' in import_data and 'team' in import_data and \
+           'name' in import_data['team']:
 
             try:
                 self.org = TowerOrganization.get(import_data['global'].get('organization', BSC_ORG))
@@ -370,10 +393,26 @@ class TowerManager(object):
         self._create_inventories(import_data.get('inventories', []))
         self._create_job_templates(import_data.get('job_templates', []))
 
-    def save(self, org, trigram, filename):
+    def save(self, trigram, filename):
         pass
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=HELP_MSG, usage=USAGE)
+    parser.add_argument('command', help='command to run', choices=['load', 'dump'])
+    args = parser.parse_args(sys.argv[1:2])
+
     t = TowerManager()
-    t.load(sys.argv[1])
+    if args.command == 'load':
+        parser = argparse.ArgumentParser(description='Load data to Ansible Tower',
+                                         usage='tower.py load [-h] <filename>')
+        parser.add_argument('filename', help='Path to input file')
+        args = parser.parse_args(sys.argv[2:])
+        t.load(args.filename)
+    elif args.command == 'dump':
+        parser = argparse.ArgumentParser(description='Export data from Ansible Tower',
+                                         usage='tower.py dump [-h] <trigram> <filename>')
+        parser.add_argument('trigram', help='Trigram to export')
+        parser.add_argument('filename', help='Path to output file')
+        args = parser.parse_args(sys.argv[2:])
+        t.save(args.trigram.upper(), args.filename)
