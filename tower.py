@@ -11,7 +11,9 @@ import tempfile
 import string
 import random
 import yaml
+
 import tower_cli
+import requests
 
 from paramiko.rsakey import RSAKey
 
@@ -90,6 +92,9 @@ class TowerResource(object):
                   'use', 'auditor']
 
     def __init__(self, **entries):
+        self.api_host = tower_cli.conf.settings.__getattr__('host')
+        self.api_auth = (tower_cli.conf.settings.__getattr__('username'),
+                         tower_cli.conf.settings.__getattr__('password'))
         self.__dict__.update(entries)
 
     def grant_permission(self, team, resource_type, resource, role_type='use', indent_level=0):
@@ -136,130 +141,201 @@ class TowerResource(object):
 
 
 class TowerOrganization(TowerResource):
-    org_res = tower_cli.get_resource('organization')
+    res = tower_cli.get_resource('organization')
 
     @classmethod
-    def get(cls, org_name):
-        return cls(**cls.org_res.get(name=org_name))
+    def get_by_name(cls, name):
+        return cls(**cls.res.get(name=name))
+
+    @classmethod
+    def get_by_id(cls, id):
+        return cls(**cls.res.get(id=id))
 
     def associate(self, resource_id):
-        self.org_res.associate(self.id, resource_id)
+        self.res.associate(self.id, resource_id)
 
 
 class TowerProject(TowerResource):
-    project_res = tower_cli.get_resource('project')
+    res = tower_cli.get_resource('project')
 
     @classmethod
     def create(cls, **entries):
-        return cls(**cls.project_res.create(**entries))
+        return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get(cls, prj_name):
-        return cls(**cls.project_res.get(name=prj_name))
+    def get_by_name(cls, name):
+        return cls(**cls.res.get(name=name))
+
+    @classmethod
+    def get_by_id(cls, id):
+        return cls(**cls.res.get(id=id))
 
     def authorize_team(self, team):
         self.grant_permission(team, 'project', self, indent_level=1)
 
     def sync(self):
-        self.project_res.update(pk=self.id)
+        self.res.update(pk=self.id)
         yellow('Waiting {} seconds for project syncing...'.format(PROJECT_SYNC_WAIT_TIME))
         time.sleep(PROJECT_SYNC_WAIT_TIME)
 
 
 class TowerUser(TowerResource):
-    user_res = tower_cli.get_resource('user')
+    res = tower_cli.get_resource('user')
 
     @classmethod
     def create(cls, **entries):
-        return cls(**cls.user_res.create(**entries))
+        return cls(**cls.res.create(**entries))
+
+    @classmethod
+    def get_by_id(cls, id):
+        return cls(**cls.res.get(id=id))
 
 
 class TowerTeam(TowerResource):
-    team_res = tower_cli.get_resource('team')
+    res = tower_cli.get_resource('team')
 
     @classmethod
     def create(cls, **entries):
-        return cls(**cls.team_res.create(**entries))
+        return cls(**cls.res.create(**entries))
+
+    @classmethod
+    def get_by_name(cls, name):
+        return cls(**cls.res.get(name=name))
 
     def associate_users(self, users):
         print()
         gray('Associating users to team ' + self.name + '...')
         for username, user in users.iteritems():
             gray('\t' + username + '...', end='')
-            self.team_res.associate(self.id, user.id)
+            self.res.associate(self.id, user.id)
             green('ok')
+
+    def users(self):
+        r = requests.get('https://' + self.api_host + self.related['users'],
+                         auth=self.api_auth, verify=False)
+        if r.ok:
+            self._users = r.json()['results']
+            for user in self._users:
+                yield dict(username=str(user['username']), email=str(user['email']),
+                           first_name=str(user['first_name']), last_name=str(user['last_name']))
+
+    def credentials(self):
+        r = requests.get('https://' + self.api_host + self.related['credentials'],
+                         auth=self.api_auth, verify=False)
+        if r.ok:
+            self._credentials = r.json()['results']
+            for cred in self._credentials:
+                if cred['kind'] == 'ssh':
+                    yield dict(username=str(cred['username']), name=str(cred['name'].upper()),
+                               vault_password=str(cred['vault_password']))
 
 
 class TowerCredential(TowerResource):
-    cred_res = tower_cli.get_resource('credential')
+    res = tower_cli.get_resource('credential')
 
     @classmethod
     def create(cls, **entries):
-        return cls(**cls.cred_res.create(**entries))
+        return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get(cls, cred_name):
-        return cls(**cls.cred_res.get(name=cred_name))
+    def get_by_name(cls, name):
+        return cls(**cls.res.get(name=name))
 
     def save(self):
-        self.cred_res.modify(pk=self.id, **self.__dict__)
+        self.res.modify(pk=self.id, **self.__dict__)
 
     def authorize_team(self, team):
         self.grant_permission(team, 'credential', self, indent_level=1)
 
 
 class TowerInventory(TowerResource):
-    inv_res = tower_cli.get_resource('inventory')
+    res = tower_cli.get_resource('inventory')
 
     @classmethod
     def create(cls, **entries):
-        return cls(**cls.inv_res.create(**entries))
+        return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get(cls, inv_name):
-        return cls(**cls.inv_res.get(name=inv_name))
+    def get_by_id(cls, id):
+        return cls(**cls.res.get(id=id))
 
     def authorize_team(self, team, permission='read'):
         self.grant_permission(team, 'inventory', self, role_type=permission, indent_level=1)
 
+    def groups(self):
+        r = requests.get('https://' + self.api_host + self.related['groups'],
+                         auth=self.api_auth, verify=False)
+        if r.ok:
+            self._groups = r.json()['results']
+            for group in self._groups:
+                hosts = []
+                r = requests.get('https://' + self.api_host + group['related']['hosts'],
+                                 auth=self.api_auth, verify=False)
+                if r.ok:
+                    hosts_in_group = r.json()['results']
+                    for host in hosts_in_group:
+                        hosts.append(str(host['name']))
+                yield dict(name=str(group['name']), hosts=hosts)
+
 
 class TowerInventoryGroup(TowerResource):
-    group_res = tower_cli.get_resource('group')
+    res = tower_cli.get_resource('group')
 
     @classmethod
     def create(cls, **entries):
-        return cls(**cls.group_res.create(**entries))
+        return cls(**cls.res.create(**entries))
 
 
 class TowerInventoryHost(TowerResource):
-    host_res = tower_cli.get_resource('host')
+    res = tower_cli.get_resource('host')
 
     @classmethod
     def create(cls, **entries):
-        return cls(**cls.host_res.create(**entries))
+        return cls(**cls.res.create(**entries))
 
     def add_to_group(self, group_id):
-        self.host_res.associate(self.id, group_id)
+        self.res.associate(self.id, group_id)
 
 
 class TowerJobTemplate(TowerResource):
-    job_tmpl_res = tower_cli.get_resource('job_template')
+    res = tower_cli.get_resource('job_template')
 
     @classmethod
     def create(cls, **entries):
-        return cls(**cls.job_tmpl_res.create(**entries))
+        return cls(**cls.res.create(**entries))
+
+    @classmethod
+    def get(cls, name):
+        return cls(**cls.res.get(name=name))
+
+    @classmethod
+    def find_by_trigram(cls, trigram):
+        job_templates = cls.res.list(all_pages=True)
+        for tmpl in job_templates['results']:
+            if tmpl['name'].upper().startswith('JOB_{}_'.format(trigram)):
+                yield (
+                        dict(name=str(tmpl['name'].upper()),
+                             inventory=str(tmpl['summary_fields']['inventory']['name'].upper()),
+                             credential=str(tmpl['summary_fields']['credential']['name'].upper()),
+                             project=str(tmpl['summary_fields']['project']['name'].upper()),
+                             playbook=str(tmpl['playbook'])),
+                        dict(inventory=tmpl['inventory'], credential=tmpl['credential'],
+                             project=tmpl['project'])
+                      )
 
 
 class TowerManager(object):
     def __init__(self):
         self.org = None
         self.team = None
-        self.users = {}
-        self.credentials = {}
-        self.inventories = {}
-        self.projects = {}
-        self.job_templates = {}
+        self.users = None
+        self.credentials = None
+        self.inventories = None
+        self.projects = None
+        self.job_templates = None
 
+
+class TowerLoad(TowerManager):
     def _create_users(self, userlist):
         print()
         gray('Creating users...')
@@ -281,6 +357,7 @@ class TowerManager(object):
         green('ok')
 
     def _create_projects(self, projects):
+        self.projects = {}
         print()
         for prj in projects:
             gray('Creating project {name}...'.format(**prj), end='')
@@ -296,10 +373,11 @@ class TowerManager(object):
             new_prj.authorize_team(self.team)
 
     def _create_credentials(self, credentials):
+        self.credentials = {}
         for cred in credentials:
             force_update = cred.get('force_update', False)
             try:
-                existing_cred = TowerCredential.get(cred['name'])
+                existing_cred = TowerCredential.get_by_name(cred['name'])
                 already_exists = True
             except tower_cli.utils.exceptions.NotFound:
                 already_exists = False
@@ -363,25 +441,30 @@ class TowerManager(object):
             print()
             gray('Creating job template {name}...'.format(**template), end='')
             template['organization'] = self.org.id
-            try:
-                template['credential'] = TowerCredential.get(template['credential']).id
-                template['inventory'] = TowerInventory.get(template['inventory']).id
-                template['project'] = TowerProject.get(template['project']).id
-                new_job_template = TowerJobTemplate.create(**template)
-                green('ok')
-            except tower_cli.utils.exceptions.NotFound:
-                red('failed')
+            template['credential'] = self.credentials.get(template['credential']).id
+            template['inventory'] = self.inventories.get(template['inventory']).id
+            template['project'] = self.projects.get(template['project']).id
+            new_job_template = TowerJobTemplate.create(**template)
+            green('ok')
             self.job_templates[new_job_template.name] = new_job_template
 
-    def load(self, filename):
+    def run(self, filename):
         with open(filename) as import_file:
             import_data = yaml.load(import_file.read())
 
-        if 'global' in import_data and 'team' in import_data and \
-           'name' in import_data['team']:
+        # TODO
+        # ajoute une fonction qui permet de valider le yaml :
+        # - les infos attendues sont presentes
+        # - les entrees vault_password != $encrypted$
+        # - organization = BSC_ORG
+        # - pas de doublon dans les noms de ressource
+        # - les ressources citees dans les job templates sont bien presentes dans le yaml
+        if 'team' in import_data and 'name' in import_data['team']:
 
             try:
-                self.org = TowerOrganization.get(import_data['global'].get('organization', BSC_ORG))
+                self.org = TowerOrganization.get_by_name(
+                            import_data.get('organization', BSC_ORG)
+                           )
             except tower_cli.utils.exceptions.NotFound:
                 return
 
@@ -393,8 +476,64 @@ class TowerManager(object):
         self._create_inventories(import_data.get('inventories', []))
         self._create_job_templates(import_data.get('job_templates', []))
 
-    def save(self, trigram, filename):
-        pass
+
+class TowerDump(TowerManager):
+    def __init__(self, trigram):
+        super(TowerDump, self).__init__()
+        self.job_related_resources = []
+        self.yaml = dict(organization=None, team=None, projects=[], credentials=[],
+                         inventories=[], job_templates=[])
+        self.trigram = trigram
+
+    def _get_users_from_team(self):
+        for user in self.team.users():
+            self.yaml['team']['users'].append(user)
+
+    def _get_creds_from_team(self):
+        for cred in self.team.credentials():
+            self.yaml['credentials'].append(cred)
+
+    def _get_job_templates_from_trigram(self):
+        for job_tmpl, job_rel_res in TowerJobTemplate.find_by_trigram(self.trigram):
+            self.job_related_resources.append(job_rel_res)
+            self.yaml['job_templates'].append(job_tmpl)
+
+    def _get_inventories_from_job_related_resources(self):
+        inv_to_get = set([i['inventory'] for i in self.job_related_resources])
+        for inventory_id in inv_to_get:
+            inventory = TowerInventory.get_by_id(inventory_id)
+            groups = []
+            for group in inventory.groups():
+                groups.append(group)
+            self.yaml['inventories'].append(dict(name=str(inventory.name),
+                                                 groups=groups))
+
+    def _get_projects_from_job_related_resources(self):
+        prj_to_get = set([i['project'] for i in self.job_related_resources])
+        for project_id in prj_to_get:
+            project = TowerProject.get_by_id(project_id)
+            self.yaml['projects'].append(dict(name=str(project.name),
+                                              scm_url=str(project.scm_url)))
+
+    def run(self, filename):
+        try:
+            self.team = TowerTeam.get_by_name('TEAM_' + self.trigram)
+            self.yaml['team'] = dict(name=str(self.team.name), users=[])
+            self.org = TowerOrganization.get_by_id(self.team.organization)
+            self.yaml['organization'] = str(self.org.name)
+        except tower_cli.utils.exceptions.NotFound:
+            return
+
+        self._get_users_from_team()
+        self._get_creds_from_team()
+
+        self._get_job_templates_from_trigram()
+        self._get_inventories_from_job_related_resources()
+        self._get_projects_from_job_related_resources()
+        # TODO
+        # Ajoute les creds qui ne sont pas deja recuperes par _get_creds_from_team
+        # self._get_creds_from_job_related_resources()
+        print(yaml.safe_dump(self.yaml, default_flow_style=False, indent=2))
 
 
 if __name__ == '__main__':
@@ -402,17 +541,19 @@ if __name__ == '__main__':
     parser.add_argument('command', help='command to run', choices=['load', 'dump'])
     args = parser.parse_args(sys.argv[1:2])
 
-    t = TowerManager()
     if args.command == 'load':
         parser = argparse.ArgumentParser(description='Load data to Ansible Tower',
                                          usage='tower.py load [-h] <filename>')
         parser.add_argument('filename', help='Path to input file')
         args = parser.parse_args(sys.argv[2:])
-        t.load(args.filename)
+        t = TowerLoad()
     elif args.command == 'dump':
         parser = argparse.ArgumentParser(description='Export data from Ansible Tower',
                                          usage='tower.py dump [-h] <trigram> <filename>')
         parser.add_argument('trigram', help='Trigram to export')
         parser.add_argument('filename', help='Path to output file')
         args = parser.parse_args(sys.argv[2:])
-        t.save(args.trigram.upper(), args.filename)
+        t = TowerDump(args.trigram.upper())
+    else:
+        sys.exit(1)
+    t.run(args.filename)

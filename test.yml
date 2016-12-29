@@ -1,6 +1,5 @@
 ---
-global:
-  organization: "BSC"
+organization: "BSC"
 
 team:
   name: TEAM_AIC
