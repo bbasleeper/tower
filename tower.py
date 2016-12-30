@@ -190,6 +190,10 @@ class TowerUser(TowerResource):
     def get_by_id(cls, id):
         return cls(**cls.res.get(id=id))
 
+    @classmethod
+    def get_by_name(cls, username):
+        return cls(**cls.res.get(username=username))
+
 
 class TowerTeam(TowerResource):
     res = tower_cli.get_resource('team')
@@ -345,10 +349,16 @@ class TowerLoad(TowerManager):
         self.users = {}
         for user in userlist:
             gray('\t{username}...'.format(**user), end='')
-            new_user = TowerUser.create(**user)
-            self.org.associate(new_user.id)
-            green('ok')
-            self.users[new_user.username] = new_user
+            try:
+                if user.get('external', True):
+                    new_user = TowerUser.get_by_name(user['username'])
+                else:
+                    new_user = TowerUser.create(**user)
+                self.org.associate(new_user.id)
+                green('ok')
+                self.users[new_user.username] = new_user
+            except tower_cli.utils.exceptions.NotFound:
+                red('failed')
 
     def _create_team(self, team_data):
         team_data.update(dict(organization=self.org.id,
@@ -451,18 +461,81 @@ class TowerLoad(TowerManager):
             green('ok')
             self.job_templates[new_job_template.name] = new_job_template
 
+    def has_duplicates(self, data, resource_name):
+        if resource_name in data:
+            resources = {}
+            for r in data[resource_name]:
+                try:
+                    resources[r['name']] += 1
+                except KeyError:
+                    resources[r['name']] = 1
+            duplicates = [k for k, v in resources.iteritems() if v > 1]
+            if len(duplicates) > 0:
+                for prj_name in duplicates:
+                    red('Project {} is duplicated !!!'.format(prj_name))
+                return True
+        return False
+
+    def validate(self, import_data):
+        is_data_valid = True
+        if 'team' not in import_data:
+            red('Missing "team" section !!!')
+            is_data_valid = False
+        elif 'name' not in import_data['team']:
+            red('Missing "name" attribute in "team" section !!!')
+            is_data_valid = False
+
+        if 'credentials' in import_data:
+            for cred in import_data['credentials']:
+                try:
+                    if cred['vault_password'] == '$encrypted$':
+                        red('You must set "vault_password" attribute in credential {name} !!!'.
+                            format(**cred))
+                        is_data_valid = False
+                except KeyError:
+                    continue
+
+        if 'organization' in import_data and import_data['organization'] != BSC_ORG:
+            red('"organization" is not {} !!!'.format(BSC_ORG))
+            is_data_valid = False
+
+        if self.has_duplicates(import_data, 'credentials'):
+            is_data_valid = False
+        if self.has_duplicates(import_data, 'projects'):
+            is_data_valid = False
+        if self.has_duplicates(import_data, 'inventories'):
+            is_data_valid = False
+        if self.has_duplicates(import_data, 'job_templates'):
+            is_data_valid = False
+
+        if 'job_templates' in import_data:
+            cred_resources = []
+            prj_resources = []
+            inv_resources = []
+            if 'credentials' in import_data:
+                cred_resources = [k['name'] for k in import_data['credentials']]
+            if 'inventories' in import_data:
+                inv_resources = [k['name'] for k in import_data['inventories']]
+            if 'projects' in import_data:
+                prj_resources = [k['name'] for k in import_data['projects']]
+            for job in import_data['job_templates']:
+                if job['credential'] not in cred_resources:
+                    red('Resource {credential} in job template {name} is missing !!!'.format(**job))
+                    is_data_valid = False
+                if job['inventory'] not in inv_resources:
+                    red('Resource {inventory} in job template {name} is missing !!!'.format(**job))
+                    is_data_valid = False
+                if job['project'] not in prj_resources:
+                    red('Resource {project} in job template {name} is missing !!!'.format(**job))
+                    is_data_valid = False
+
+        return is_data_valid
+
     def run(self, filename):
         with open(filename) as import_file:
             import_data = yaml.load(import_file.read())
 
-        # TODO
-        # ajoute une fonction qui permet de valider le yaml :
-        # - les infos attendues sont presentes
-        # - les entrees vault_password != $encrypted$
-        # - organization = BSC_ORG
-        # - pas de doublon dans les noms de ressource
-        # - les ressources citees dans les job templates sont bien presentes dans le yaml
-        if 'team' in import_data and 'name' in import_data['team']:
+        if self.validate(import_data):
 
             try:
                 self.org = TowerOrganization.get_by_name(
@@ -471,13 +544,13 @@ class TowerLoad(TowerManager):
             except tower_cli.utils.exceptions.NotFound:
                 return
 
-        self._create_team(import_data['team'])
-        self._create_users(import_data['team'].get('users', []))
-        self.team.associate_users(self.users)
-        self._create_projects(import_data.get('projects', []))
-        self._create_credentials(import_data.get('credentials', []))
-        self._create_inventories(import_data.get('inventories', []))
-        self._create_job_templates(import_data.get('job_templates', []))
+            self._create_team(import_data['team'])
+            self._create_users(import_data['team'].get('users', []))
+            self.team.associate_users(self.users)
+            self._create_projects(import_data.get('projects', []))
+            self._create_credentials(import_data.get('credentials', []))
+            self._create_inventories(import_data.get('inventories', []))
+            self._create_job_templates(import_data.get('job_templates', []))
 
 
 class TowerDump(TowerManager):
@@ -538,8 +611,6 @@ class TowerDump(TowerManager):
         # TODO
         # Ajoute les creds qui ne sont pas deja recuperes par _get_creds_from_team
         # self._get_creds_from_job_related_resources()
-        #
-        # Export les extra vars des job templates
         with open(filename, 'w') as output_file:
             yaml.safe_dump(self.yaml, default_flow_style=False, indent=2, stream=output_file)
 
