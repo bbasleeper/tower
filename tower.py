@@ -313,15 +313,18 @@ class TowerJobTemplate(TowerResource):
         job_templates = cls.res.list(all_pages=True)
         for tmpl in job_templates['results']:
             if tmpl['name'].upper().startswith('JOB_{}_'.format(trigram)):
-                yield (
-                        dict(name=str(tmpl['name'].upper()),
+                try:
+                    t = dict(name=str(tmpl['name'].upper()),
                              inventory=str(tmpl['summary_fields']['inventory']['name'].upper()),
                              credential=str(tmpl['summary_fields']['credential']['name'].upper()),
                              project=str(tmpl['summary_fields']['project']['name'].upper()),
-                             playbook=str(tmpl['playbook'])),
-                        dict(inventory=tmpl['inventory'], credential=tmpl['credential'],
-                             project=tmpl['project'])
-                      )
+                             playbook=str(tmpl['playbook']))
+                    if len(tmpl['extra_vars']) > 0:
+                        t.update(extra_vars=str(tmpl['extra_vars']))
+                    yield (t, dict(inventory=tmpl['inventory'], credential=tmpl['credential'],
+                                   project=tmpl['project']))
+                except KeyError:
+                    red('Template {} is not properly configured, skipping...'.format(tmpl['name']))
 
 
 class TowerManager(object):
@@ -512,8 +515,10 @@ class TowerDump(TowerManager):
         prj_to_get = set([i['project'] for i in self.job_related_resources])
         for project_id in prj_to_get:
             project = TowerProject.get_by_id(project_id)
-            self.yaml['projects'].append(dict(name=str(project.name),
-                                              scm_url=str(project.scm_url)))
+            prj = dict(name=str(project.name), scm_url=str(project.scm_url))
+            if len(project.scm_branch) > 0:
+                prj.update(scm_branch=str(project.scm_branch))
+            self.yaml['projects'].append(prj)
 
     def run(self, filename):
         try:
@@ -533,7 +538,10 @@ class TowerDump(TowerManager):
         # TODO
         # Ajoute les creds qui ne sont pas deja recuperes par _get_creds_from_team
         # self._get_creds_from_job_related_resources()
-        print(yaml.safe_dump(self.yaml, default_flow_style=False, indent=2))
+        #
+        # Export les extra vars des job templates
+        with open(filename, 'w') as output_file:
+            yaml.safe_dump(self.yaml, default_flow_style=False, indent=2, stream=output_file)
 
 
 if __name__ == '__main__':
