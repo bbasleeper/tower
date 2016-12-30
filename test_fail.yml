@@ -1,0 +1,59 @@
+---
+organization: "BSC"
+
+team:
+  name: TEAM_AIC
+  users:
+    - username: bidule
+      email: bidule@machin.com
+      first_name: Bi
+      last_name: DULE
+      password: "mypass"
+    - username: machin
+      email: machin@machin.com
+      first_name: Ma
+      last_name: CHIN
+      password: "mypass"
+
+job_templates:
+  - name: JOB_AIC_SRC_DI
+    inventory: INV_AIC_SRC_DI
+    credential: CRED_SERVER_AICD
+    project: PROJECT_AICD_SRC
+    playbook: deploy.yml
+  - name: JOB_AIC_SRC_DI
+    inventory: INV_AIC_SRC_DI
+    credential: CRED_SERVER_AICD
+    project: PROJECT_AICD_SRC
+    playbook: deploy.yml
+
+projects:
+  - name: PROJECT_AICD_SRC
+    scm_url: https://github.com/bbasleeper/tower
+  - name: PROJECT_AICD_SRC
+    scm_url: https://github.com/bbasleeper/tower
+
+credentials:
+  - name: CRED_SERVER_AICD
+    username: trucmuche
+    vault_password: "$encrypted$"
+    force_update: true
+
+inventories:
+  - name: INV_AIC_SRC_DI
+    team_permission: read
+    groups:
+      - name: dev
+        hosts:
+          - name: target01
+          - name: target02
+          - name: target11
+          - name: target12
+      - name: FRONT
+        hosts:
+          - name: target01
+          - name: target02
+      - name: BACK
+        hosts:
+          - name: target11
+          - name: target12
