@@ -55,30 +55,90 @@ ROLE_RES = tower_cli.get_resource('role')
 
 # Helper functions
 def red(text, end='\n'):
+    """
+    Prints a message in RED
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[91m {}\033[00m" .format(text), end=end)
 
 
 def green(text, end='\n'):
+    """
+    Prints a message in GREEN
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[92m {}\033[00m" .format(text), end=end)
 
 
 def yellow(text, end='\n'):
+    """
+    Prints a message in YELLOW
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[93m {}\033[00m" .format(text), end=end)
 
 
 def blue(text, end='\n'):
+    """
+    Prints a message in BLUE
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[96m {}\033[00m" .format(text), end=end)
 
 
 def gray(text, end='\n'):
+    """
+    Prints a message in GRAY
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[97m {}\033[00m" .format(text), end=end)
 
 
 def password_gen(size=14, chars=string.ascii_letters + string.digits + string.punctuation):
+    """
+    Generates a random password
+
+    :param size: Length of the password.
+    :param chars: List of characters to use to generate the password.
+    :type size: int
+    :type chars: string
+    :return: The generated password.
+    :rtype: string
+    """
     return ''.join(random.choice(chars) for _ in range(size))
 
 
 def generate_ssh_key(password, bits=SSH_KEY_BITS):
+    """
+    Generates a password protected SSH key
+
+    :param password: Password used to encrypt the key.
+    :param bits: Length of the bits used for the key.
+    :type password: string
+    :type bits: int
+    :return: The generated SSH key.
+    :rtype: dict
+    """
     rsakey = RSAKey.generate(bits)
     # We use a temporary file to get ssh private key
     # because RSAKey.write_private_key method does not
@@ -95,6 +155,9 @@ def generate_ssh_key(password, bits=SSH_KEY_BITS):
 
 
 def has_duplicates(data, resource_type):
+    """
+    Check if a resource is duplicated.
+    """
     if resource_type in data:
         resources = {}
         for r in data[resource_type]:
@@ -111,10 +174,16 @@ def has_duplicates(data, resource_type):
 
 
 def extra_vars_to_json(extra_vars):
+    """
+    Convert 'extra_vars' from yaml to json.
+    """
     return json.dumps(yaml.load(extra_vars))
 
 
 def validate(data):
+    """
+    Validates yaml data before importing into Ansible Tower
+    """
     gray('Validating data before import...')
     is_data_valid = True
     if 'team' not in data:
@@ -241,13 +310,22 @@ class TowerOrganization(TowerResource):
 
     @classmethod
     def get_by_name(cls, name):
+        """
+        Get tower organization by name
+        """
         return cls(**cls.res.get(name=name))
 
     @classmethod
     def get_by_id(cls, org_id):
+        """
+        Get tower organization by id
+        """
         return cls(**cls.res.get(id=org_id))
 
     def associate(self, resource_id):
+        """
+        Associates a resource to this organization
+        """
         self.res.associate(self.id, resource_id)
 
 
@@ -256,20 +334,35 @@ class TowerProject(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Creates a tower project
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
     def get_by_name(cls, prj_name):
+        """
+        Get a towerproject by name
+        """
         return cls(**cls.res.get(name=prj_name))
 
     @classmethod
     def get_by_id(cls, prj_id):
+        """
+        Get a tower project by id
+        """
         return cls(**cls.res.get(id=prj_id))
 
     def authorize_team(self, team):
+        """
+        Grants permission on this project to specified team
+        """
         self.grant_permission(team, 'project', self, indent_level=1)
 
     def sync(self):
+        """
+        Ask Ansible Tower to launch a project sync
+        """
         self.res.update(pk=self.id)
         yellow('Waiting {} seconds for project syncing...'.format(PROJECT_SYNC_WAIT_TIME))
         time.sleep(PROJECT_SYNC_WAIT_TIME)
@@ -280,14 +373,23 @@ class TowerUser(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create a tower user
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
     def get_by_id(cls, user_id):
+        """
+        Get a tower user by id
+        """
         return cls(**cls.res.get(id=user_id))
 
     @classmethod
     def get_by_name(cls, user_name):
+        """
+        Get a tower user by name
+        """
         return cls(**cls.res.get(username=user_name))
 
 
@@ -296,19 +398,31 @@ class TowerTeam(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create a tower team
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
     def get_by_name(cls, team_name):
+        """
+        Get a tower team by name
+        """
         return cls(**cls.res.get(name=team_name))
 
     @classmethod
     def list_names_by_trigram(cls, trigram):
+        """
+        List all team names matching a trigram, or all teams if trigram is None
+        """
         for team in cls.res.list(all_pages=True)['results']:
             if trigram is None or team['name'].upper() == 'TEAM_' + trigram.upper():
                 yield team['name']
 
     def associate_users(self, users):
+        """
+        Associates users to this team
+        """
         print()
         gray('Associating users to team ' + self.name + '...')
         for username, user in users.iteritems():
@@ -317,6 +431,9 @@ class TowerTeam(TowerResource):
             green('ok')
 
     def users(self):
+        """
+        Get all users associated to this team
+        """
         r = requests.get('https://' + self.api_host + self.related['users'],
                          auth=self.api_auth, verify=False)
         if r.ok:
@@ -326,6 +443,9 @@ class TowerTeam(TowerResource):
                            first_name=str(user['first_name']), last_name=str(user['last_name']))
 
     def credentials(self):
+        """
+        Get all credentials associated to this team
+        """
         r = requests.get('https://' + self.api_host + self.related['credentials'],
                          auth=self.api_auth, verify=False)
         if r.ok:
@@ -341,25 +461,46 @@ class TowerCredential(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create a tower credential
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
     def get_by_name(cls, cred_name):
+        """
+        Get a tower credential by name
+        """
         return cls(**cls.res.get(name=cred_name))
 
     def set_username(self, username):
+        """
+        Change credential username
+        """
         self.username = username
 
     def set_key_data(self, key_data):
+        """
+        Change credential SSH private key
+        """
         self.ssh_key_data = key_data
 
     def set_key_unlock(self, password):
+        """
+        Change credential SSH private key password
+        """
         self.ssh_key_unlock = password
 
     def save(self):
+        """
+        Save changes to Ansible Tower
+        """
         self.res.modify(pk=self.id, **self.__dict__)
 
     def authorize_team(self, team):
+        """
+        Allow 'use' permission to specified team on this credential
+        """
         self.grant_permission(team, 'credential', self, indent_level=1)
 
 
@@ -368,16 +509,28 @@ class TowerInventory(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create tower inventory
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
     def get_by_id(cls, inv_id):
+        """
+        Get tower inventory by id
+        """
         return cls(**cls.res.get(id=inv_id))
 
     def authorize_team(self, team, permission='read'):
+        """
+        Allow permission to specified team on this inventory
+        """
         self.grant_permission(team, 'inventory', self, role_type=permission, indent_level=1)
 
     def groups(self):
+        """
+        Returns groups (and hosts in each group) of the inventory
+        """
         r = requests.get('https://' + self.api_host + self.related['groups'],
                          auth=self.api_auth, verify=False)
         if r.ok:
@@ -398,6 +551,9 @@ class TowerInventoryGroup(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create inventory group
+        """
         return cls(**cls.res.create(**entries))
 
 
@@ -406,9 +562,15 @@ class TowerInventoryHost(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create inventory host
+        """
         return cls(**cls.res.create(**entries))
 
     def add_to_group(self, group_id):
+        """
+        Associate host to group
+        """
         self.res.associate(self.id, group_id)
 
 
@@ -417,14 +579,23 @@ class TowerJobTemplate(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create tower job template
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
     def get(cls, job_name):
+        """
+        Get tower job template by name
+        """
         return cls(**cls.res.get(name=job_name))
 
     @classmethod
     def find_by_trigram(cls, trigram):
+        """
+        Returns job templates matching a trigram
+        """
         job_templates = cls.res.list(all_pages=True)
         for tmpl in job_templates['results']:
             if tmpl['name'].upper().startswith('JOB_{}_'.format(trigram)):
