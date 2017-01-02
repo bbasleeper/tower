@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# pylint: disable=no-member,invalid-name,attribute-defined-outside-init
 
 from __future__ import print_function
 
@@ -83,6 +84,82 @@ def generate_ssh_key(password, bits=SSH_KEY_BITS):
     return dict(public=rsakey.get_name() + ' ' + rsakey.get_base64(),
                 private=ssh_private_key,
                 password=password)
+
+
+def has_duplicates(data, resource_type):
+    if resource_type in data:
+        resources = {}
+        for r in data[resource_type]:
+            try:
+                resources[r['name']] += 1
+            except KeyError:
+                resources[r['name']] = 1
+        duplicates = [k for k, v in resources.iteritems() if v > 1]
+        if len(duplicates) > 0:
+            for res_name in duplicates:
+                red('{} {} is duplicated !!!'.format(resource_type, res_name))
+            return True
+    return False
+
+
+def extra_vars_to_list(vars):
+    return ['{}={}'.format(k, v) for k, v in yaml.load(vars).iteritems()]
+
+
+def validate(import_data):
+    is_data_valid = True
+    if 'team' not in import_data:
+        red('Missing "team" section !!!')
+        is_data_valid = False
+    elif 'name' not in import_data['team']:
+        red('Missing "name" attribute in "team" section !!!')
+        is_data_valid = False
+
+    if 'credentials' in import_data:
+        for cred in import_data['credentials']:
+            try:
+                if cred['vault_password'] == '$encrypted$':
+                    red('You must set "vault_password" attribute in credential {name} !!!'.
+                        format(**cred))
+                    is_data_valid = False
+            except KeyError:
+                continue
+
+    if 'organization' in import_data and import_data['organization'] != BSC_ORG:
+        red('"organization" is not {} !!!'.format(BSC_ORG))
+        is_data_valid = False
+
+    if has_duplicates(import_data, 'credentials'):
+        is_data_valid = False
+    if has_duplicates(import_data, 'projects'):
+        is_data_valid = False
+    if has_duplicates(import_data, 'inventories'):
+        is_data_valid = False
+    if has_duplicates(import_data, 'job_templates'):
+        is_data_valid = False
+
+    if 'job_templates' in import_data:
+        cred_resources = []
+        prj_resources = []
+        inv_resources = []
+        if 'credentials' in import_data:
+            cred_resources = [k['name'] for k in import_data['credentials']]
+        if 'inventories' in import_data:
+            inv_resources = [k['name'] for k in import_data['inventories']]
+        if 'projects' in import_data:
+            prj_resources = [k['name'] for k in import_data['projects']]
+        for job in import_data['job_templates']:
+            if job['credential'] not in cred_resources:
+                red('Resource {credential} in job template {name} is missing !!!'.format(**job))
+                is_data_valid = False
+            if job['inventory'] not in inv_resources:
+                red('Resource {inventory} in job template {name} is missing !!!'.format(**job))
+                is_data_valid = False
+            if job['project'] not in prj_resources:
+                red('Resource {project} in job template {name} is missing !!!'.format(**job))
+                is_data_valid = False
+
+    return is_data_valid
 
 
 class TowerResource(object):
@@ -245,6 +322,15 @@ class TowerCredential(TowerResource):
     def get_by_name(cls, name):
         return cls(**cls.res.get(name=name))
 
+    def set_username(self, username):
+        self.username = username
+
+    def set_key_data(self, key_data):
+        self.ssh_key_data = key_data
+
+    def set_key_unlock(self, password):
+        self.ssh_key_unlock = password
+
     def save(self):
         self.res.modify(pk=self.id, **self.__dict__)
 
@@ -278,7 +364,7 @@ class TowerInventory(TowerResource):
                 if r.ok:
                     hosts_in_group = r.json()['results']
                     for host in hosts_in_group:
-                        hosts.append(str(host['name']))
+                        hosts.append(dict(name=str(host['name'])))
                 yield dict(name=str(group['name']), hosts=hosts)
 
 
@@ -325,7 +411,7 @@ class TowerJobTemplate(TowerResource):
                              playbook=str(tmpl['playbook']))
 
                     if len(tmpl['extra_vars']) > 0:
-                        t.update(extra_vars=str(tmpl['extra_vars']))
+                        t.update(extra_vars=extra_vars_to_list(tmpl['extra_vars']))
 
                     if bool(tmpl['survey_enabled']):
                         api_host = tower_cli.conf.settings.__getattr__('host')
@@ -356,15 +442,14 @@ class TowerManager(object):
 
 
 class TowerLoad(TowerManager):
-    def __init__(self):
+    def __init__(self, data):
         super(TowerLoad, self).__init__()
-        self.team = None
-        self.org = None
         self.users = {}
         self.projects = {}
         self.credentials = {}
         self.inventories = {}
         self.job_templates = {}
+        self._data = data
 
     def _create_users(self, userlist):
         print()
@@ -410,7 +495,7 @@ class TowerLoad(TowerManager):
         for cred in credentials:
             force_update = cred.get('force_update', False)
             try:
-                existing_cred = TowerCredential.get_by_name(cred['name'])
+                new_cred = TowerCredential.get_by_name(cred['name'])
                 already_exists = True
             except tower_cli.utils.exceptions.NotFound:
                 already_exists = False
@@ -433,13 +518,12 @@ class TowerLoad(TowerManager):
                     new_cred = TowerCredential.create(**cred)
                 else:
                     # existing_cred.organization = self.org.id
-                    existing_cred.username = cred['username']
-                    existing_cred.ssh_key_data = ssh_key['private']
-                    existing_cred.ssh_key_unlock = ssh_key['password']
-                    # existing_cred.kind = cred.get('kind', 'ssh')
-                    # existing_cred.vault_password = cred.get('vault_password', password_gen())
-                    existing_cred.save()
-                    new_cred = existing_cred
+                    new_cred.set_username(cred['username'])
+                    new_cred.set_key_data(ssh_key['private'])
+                    new_cred.set_key_unlock(ssh_key['password'])
+                    # new_cred.kind = cred.get('kind', 'ssh')
+                    # new_cred.vault_password = cred.get('vault_password', password_gen())
+                    new_cred.save()
             else:
                 gray('Credential {name} already exists, skipping...'.format(**cred), end='')
             self.credentials[cred['name']] = new_cred
@@ -479,116 +563,42 @@ class TowerLoad(TowerManager):
             green('ok')
             self.job_templates[new_job_template.name] = new_job_template
 
-    def has_duplicates(self, data, resource_name):
-        if resource_name in data:
-            resources = {}
-            for r in data[resource_name]:
-                try:
-                    resources[r['name']] += 1
-                except KeyError:
-                    resources[r['name']] = 1
-            duplicates = [k for k, v in resources.iteritems() if v > 1]
-            if len(duplicates) > 0:
-                for prj_name in duplicates:
-                    red('Project {} is duplicated !!!'.format(prj_name))
-                return True
-        return False
+    def run(self):
+        try:
+            self.org = TowerOrganization.get_by_name(self._data.get('organization', BSC_ORG))
+        except tower_cli.utils.exceptions.NotFound:
+            return
 
-    def validate(self, import_data):
-        is_data_valid = True
-        if 'team' not in import_data:
-            red('Missing "team" section !!!')
-            is_data_valid = False
-        elif 'name' not in import_data['team']:
-            red('Missing "name" attribute in "team" section !!!')
-            is_data_valid = False
-
-        if 'credentials' in import_data:
-            for cred in import_data['credentials']:
-                try:
-                    if cred['vault_password'] == '$encrypted$':
-                        red('You must set "vault_password" attribute in credential {name} !!!'.
-                            format(**cred))
-                        is_data_valid = False
-                except KeyError:
-                    continue
-
-        if 'organization' in import_data and import_data['organization'] != BSC_ORG:
-            red('"organization" is not {} !!!'.format(BSC_ORG))
-            is_data_valid = False
-
-        if self.has_duplicates(import_data, 'credentials'):
-            is_data_valid = False
-        if self.has_duplicates(import_data, 'projects'):
-            is_data_valid = False
-        if self.has_duplicates(import_data, 'inventories'):
-            is_data_valid = False
-        if self.has_duplicates(import_data, 'job_templates'):
-            is_data_valid = False
-
-        if 'job_templates' in import_data:
-            cred_resources = []
-            prj_resources = []
-            inv_resources = []
-            if 'credentials' in import_data:
-                cred_resources = [k['name'] for k in import_data['credentials']]
-            if 'inventories' in import_data:
-                inv_resources = [k['name'] for k in import_data['inventories']]
-            if 'projects' in import_data:
-                prj_resources = [k['name'] for k in import_data['projects']]
-            for job in import_data['job_templates']:
-                if job['credential'] not in cred_resources:
-                    red('Resource {credential} in job template {name} is missing !!!'.format(**job))
-                    is_data_valid = False
-                if job['inventory'] not in inv_resources:
-                    red('Resource {inventory} in job template {name} is missing !!!'.format(**job))
-                    is_data_valid = False
-                if job['project'] not in prj_resources:
-                    red('Resource {project} in job template {name} is missing !!!'.format(**job))
-                    is_data_valid = False
-
-        return is_data_valid
-
-    def run(self, filename):
-        with open(filename) as import_file:
-            import_data = yaml.load(import_file.read())
-
-        if self.validate(import_data):
-
-            try:
-                self.org = TowerOrganization.get_by_name(import_data.get('organization', BSC_ORG))
-            except tower_cli.utils.exceptions.NotFound:
-                return
-
-            self._create_team(import_data['team'])
-            self._create_users(import_data['team'].get('users', []))
-            self.team.associate_users(self.users)
-            self._create_projects(import_data.get('projects', []))
-            self._create_credentials(import_data.get('credentials', []))
-            self._create_inventories(import_data.get('inventories', []))
-            self._create_job_templates(import_data.get('job_templates', []))
+        self._create_team(self._data['team'])
+        self._create_users(self._data['team'].get('users', []))
+        self.team.associate_users(self.users)
+        self._create_projects(self._data.get('projects', []))
+        self._create_credentials(self._data.get('credentials', []))
+        self._create_inventories(self._data.get('inventories', []))
+        self._create_job_templates(self._data.get('job_templates', []))
 
 
 class TowerDump(TowerManager):
-    def __init__(self, trigram):
+    def __init__(self, trigram, filename):
         super(TowerDump, self).__init__()
         self.job_related_resources = []
-        self.yaml = dict(organization=None, team=None, projects=[], credentials=[],
-                         inventories=[], job_templates=[])
+        self.yml = dict(organization=None, team=None, projects=[], credentials=[],
+                        inventories=[], job_templates=[])
         self.trigram = trigram
+        self.filename = filename
 
     def _get_users_from_team(self):
         for user in self.team.users():
-            self.yaml['team']['users'].append(user)
+            self.yml['team']['users'].append(user)
 
     def _get_creds_from_team(self):
         for cred in self.team.credentials():
-            self.yaml['credentials'].append(cred)
+            self.yml['credentials'].append(cred)
 
     def _get_job_templates_from_trigram(self):
         for job_tmpl, job_rel_res in TowerJobTemplate.find_by_trigram(self.trigram):
             self.job_related_resources.append(job_rel_res)
-            self.yaml['job_templates'].append(job_tmpl)
+            self.yml['job_templates'].append(job_tmpl)
 
     def _get_inventories_from_job_related_resources(self):
         inv_to_get = set([i['inventory'] for i in self.job_related_resources])
@@ -597,8 +607,8 @@ class TowerDump(TowerManager):
             groups = []
             for group in inventory.groups():
                 groups.append(group)
-            self.yaml['inventories'].append(dict(name=str(inventory.name),
-                                                 groups=groups))
+            self.yml['inventories'].append(dict(name=str(inventory.name),
+                                                groups=groups))
 
     def _get_projects_from_job_related_resources(self):
         prj_to_get = set([i['project'] for i in self.job_related_resources])
@@ -607,14 +617,14 @@ class TowerDump(TowerManager):
             prj = dict(name=str(project.name), scm_url=str(project.scm_url))
             if len(project.scm_branch) > 0:
                 prj.update(scm_branch=str(project.scm_branch))
-            self.yaml['projects'].append(prj)
+            self.yml['projects'].append(prj)
 
-    def run(self, filename):
+    def run(self):
         try:
             self.team = TowerTeam.get_by_name('TEAM_' + self.trigram)
-            self.yaml['team'] = dict(name=str(self.team.name), users=[])
+            self.yml['team'] = dict(name=str(self.team.name), users=[])
             self.org = TowerOrganization.get_by_id(self.team.organization)
-            self.yaml['organization'] = str(self.org.name)
+            self.yml['organization'] = str(self.org.name)
         except tower_cli.utils.exceptions.NotFound:
             return
 
@@ -627,8 +637,8 @@ class TowerDump(TowerManager):
         # TODO
         # Ajoute les creds qui ne sont pas deja recuperes par _get_creds_from_team
         # self._get_creds_from_job_related_resources()
-        with open(filename, 'w') as output_file:
-            yaml.safe_dump(self.yaml, default_flow_style=False, indent=2, stream=output_file)
+        with open(self.filename, 'w') as output_file:
+            yaml.safe_dump(self.yml, default_flow_style=False, indent=2, stream=output_file)
 
 
 if __name__ == '__main__':
@@ -641,14 +651,19 @@ if __name__ == '__main__':
                                          usage='tower.py load [-h] <filename>')
         parser.add_argument('filename', help='Path to input file')
         args = parser.parse_args(sys.argv[2:])
-        t = TowerLoad()
+        with open(args.filename) as import_file:
+            import_data = yaml.load(import_file.read())
+
+        if validate(import_data):
+            t = TowerLoad(import_data)
+            t.run()
     elif args.command == 'dump':
         parser = argparse.ArgumentParser(description='Export data from Ansible Tower',
                                          usage='tower.py dump [-h] <trigram> <filename>')
         parser.add_argument('trigram', help='Trigram to export')
         parser.add_argument('filename', help='Path to output file')
         args = parser.parse_args(sys.argv[2:])
-        t = TowerDump(args.trigram.upper())
+        t = TowerDump(args.trigram.upper(), args.filename)
+        t.run()
     else:
         sys.exit(1)
-    t.run(args.filename)
