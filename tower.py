@@ -218,8 +218,8 @@ class TowerTeam(TowerResource):
         r = requests.get('https://' + self.api_host + self.related['users'],
                          auth=self.api_auth, verify=False)
         if r.ok:
-            self._users = r.json()['results']
-            for user in self._users:
+            users = r.json()['results']
+            for user in users:
                 yield dict(username=str(user['username']), email=str(user['email']),
                            first_name=str(user['first_name']), last_name=str(user['last_name']))
 
@@ -227,8 +227,8 @@ class TowerTeam(TowerResource):
         r = requests.get('https://' + self.api_host + self.related['credentials'],
                          auth=self.api_auth, verify=False)
         if r.ok:
-            self._credentials = r.json()['results']
-            for cred in self._credentials:
+            credentials = r.json()['results']
+            for cred in credentials:
                 if cred['kind'] == 'ssh':
                     yield dict(username=str(cred['username']), name=str(cred['name'].upper()),
                                vault_password=str(cred['vault_password']))
@@ -270,8 +270,8 @@ class TowerInventory(TowerResource):
         r = requests.get('https://' + self.api_host + self.related['groups'],
                          auth=self.api_auth, verify=False)
         if r.ok:
-            self._groups = r.json()['results']
-            for group in self._groups:
+            groups = r.json()['results']
+            for group in groups:
                 hosts = []
                 r = requests.get('https://' + self.api_host + group['related']['hosts'],
                                  auth=self.api_auth, verify=False)
@@ -323,8 +323,21 @@ class TowerJobTemplate(TowerResource):
                              credential=str(tmpl['summary_fields']['credential']['name'].upper()),
                              project=str(tmpl['summary_fields']['project']['name'].upper()),
                              playbook=str(tmpl['playbook']))
+
                     if len(tmpl['extra_vars']) > 0:
                         t.update(extra_vars=str(tmpl['extra_vars']))
+
+                    if bool(tmpl['survey_enabled']):
+                        api_host = tower_cli.conf.settings.__getattr__('host')
+                        api_auth = (tower_cli.conf.settings.__getattr__('username'),
+                                    tower_cli.conf.settings.__getattr__('password'))
+
+                        r = requests.get('https://' + api_host + tmpl['related']['survey_spec'],
+                                         auth=api_auth, verify=False)
+                        if r.ok:
+                            survey_spec = r.json()['spec']
+                            t.update(survey_spec=survey_spec)
+
                     yield (t, dict(inventory=tmpl['inventory'], credential=tmpl['credential'],
                                    project=tmpl['project']))
                 except KeyError:
@@ -343,10 +356,19 @@ class TowerManager(object):
 
 
 class TowerLoad(TowerManager):
+    def __init__(self):
+        super(TowerLoad, self).__init__()
+        self.team = None
+        self.org = None
+        self.users = {}
+        self.projects = {}
+        self.credentials = {}
+        self.inventories = {}
+        self.job_templates = {}
+
     def _create_users(self, userlist):
         print()
         gray('Creating users...')
-        self.users = {}
         for user in userlist:
             gray('\t{username}...'.format(**user), end='')
             try:
@@ -362,15 +384,14 @@ class TowerLoad(TowerManager):
 
     def _create_team(self, team_data):
         team_data.update(dict(organization=self.org.id,
-                         description=team_data.get('description',
-                                                   team_data['name'] + ' project team')))
+                              description=team_data.get('description',
+                                                        team_data['name'] + ' project team')))
         print()
         gray('Creating {description}...'.format(**team_data), end='')
         self.team = TowerTeam.create(**team_data)
         green('ok')
 
     def _create_projects(self, projects):
-        self.projects = {}
         print()
         for prj in projects:
             gray('Creating project {name}...'.format(**prj), end='')
@@ -386,7 +407,6 @@ class TowerLoad(TowerManager):
             new_prj.authorize_team(self.team)
 
     def _create_credentials(self, credentials):
-        self.credentials = {}
         for cred in credentials:
             force_update = cred.get('force_update', False)
             try:
@@ -427,7 +447,6 @@ class TowerLoad(TowerManager):
             new_cred.authorize_team(self.team)
 
     def _create_inventories(self, invlist):
-        self.inventories = {}
         for inv in invlist:
             print()
             gray('Creating inventory {name}...'.format(**inv), end='')
@@ -449,7 +468,6 @@ class TowerLoad(TowerManager):
             self.inventories[new_inv.name] = new_inv
 
     def _create_job_templates(self, templates):
-        self.job_templates = {}
         for template in templates:
             print()
             gray('Creating job template {name}...'.format(**template), end='')
@@ -538,9 +556,7 @@ class TowerLoad(TowerManager):
         if self.validate(import_data):
 
             try:
-                self.org = TowerOrganization.get_by_name(
-                            import_data.get('organization', BSC_ORG)
-                           )
+                self.org = TowerOrganization.get_by_name(import_data.get('organization', BSC_ORG))
             except tower_cli.utils.exceptions.NotFound:
                 return
 
