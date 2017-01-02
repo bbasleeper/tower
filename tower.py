@@ -2,6 +2,11 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=no-member,invalid-name,attribute-defined-outside-init
 
+"""
+Import/Export Ansible Tower resources (teams, users, projects, credentials,
+inventories and job templates)
+"""
+
 from __future__ import print_function
 
 import sys
@@ -12,6 +17,7 @@ import tempfile
 import string
 import random
 import yaml
+import json
 
 import tower_cli
 import requests
@@ -102,8 +108,8 @@ def has_duplicates(data, resource_type):
     return False
 
 
-def extra_vars_to_list(vars):
-    return ['{}={}'.format(k, v) for k, v in yaml.load(vars).iteritems()]
+def extra_vars_to_json(vars):
+    return json.dumps(yaml.load(vars))
 
 
 def validate(import_data):
@@ -411,7 +417,7 @@ class TowerJobTemplate(TowerResource):
                              playbook=str(tmpl['playbook']))
 
                     if len(tmpl['extra_vars']) > 0:
-                        t.update(extra_vars=extra_vars_to_list(tmpl['extra_vars']))
+                        t.update(extra_vars=extra_vars_to_json(tmpl['extra_vars']))
 
                     if bool(tmpl['survey_enabled']):
                         api_host = tower_cli.conf.settings.__getattr__('host')
@@ -559,6 +565,8 @@ class TowerLoad(TowerManager):
             template['credential'] = self.credentials.get(template['credential']).id
             template['inventory'] = self.inventories.get(template['inventory']).id
             template['project'] = self.projects.get(template['project']).id
+            if 'extra_vars' in template:
+                template['extra_vars'] = [template['extra_vars']]
             new_job_template = TowerJobTemplate.create(**template)
             green('ok')
             self.job_templates[new_job_template.name] = new_job_template
