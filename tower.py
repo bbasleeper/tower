@@ -12,6 +12,7 @@ from __future__ import print_function
 
 import sys
 import os
+import os.path
 import time
 import argparse
 import tempfile
@@ -300,6 +301,12 @@ class TowerTeam(TowerResource):
     @classmethod
     def get_by_name(cls, team_name):
         return cls(**cls.res.get(name=team_name))
+
+    @classmethod
+    def list_names_by_trigram(cls, trigram):
+        for team in cls.res.list(all_pages=True)['results']:
+            if trigram is None or team['name'].upper() == 'TEAM_' + trigram.upper():
+                yield team['name']
 
     def associate_users(self, users):
         print()
@@ -599,67 +606,69 @@ class TowerLoad(TowerManager):
 
 
 class TowerDump(TowerManager):
-    def __init__(self, trigram, filename):
+    def __init__(self, filename, trigram=None):
         super(TowerDump, self).__init__()
-        self.job_related_resources = []
-        self.yml = dict(organization=None, team=dict(name=None, users=[]), projects=[],
-                        credentials=[], inventories=[], job_templates=[])
         self.trigram = trigram
         self.filename = filename
 
-    def _get_users_from_team(self):
-        for user in self.team.users():
-            self.yml['team']['users'].append(user)
-
-    def _get_creds_from_team(self):
-        for cred in self.team.credentials():
-            self.yml['credentials'].append(cred)
-
-    def _get_job_templates_from_trigram(self):
-        for job_tmpl, job_rel_res in TowerJobTemplate.find_by_trigram(self.trigram):
-            self.job_related_resources.append(job_rel_res)
-            self.yml['job_templates'].append(job_tmpl)
-
-    def _get_inventories_from_job_related_resources(self):
-        inv_to_get = set([i['inventory'] for i in self.job_related_resources])
+    def _get_inventories_from_job_related_resources(self, job_related_resources):
+        inv_to_get = set([i['inventory'] for i in job_related_resources])
         for inventory_id in inv_to_get:
             inventory = TowerInventory.get_by_id(inventory_id)
             groups = []
             for group in inventory.groups():
                 groups.append(group)
-            self.yml['inventories'].append(dict(name=str(inventory.name),
-                                                groups=groups))
+            yield dict(name=str(inventory.name), groups=groups)
 
-    def _get_projects_from_job_related_resources(self):
-        prj_to_get = set([i['project'] for i in self.job_related_resources])
+    def _get_projects_from_job_related_resources(self, job_related_resources):
+        prj_to_get = set([i['project'] for i in job_related_resources])
         for project_id in prj_to_get:
             project = TowerProject.get_by_id(project_id)
             prj = dict(name=str(project.name), scm_url=str(project.scm_url))
             if len(project.scm_branch) > 0:
                 prj.update(scm_branch=str(project.scm_branch))
-            self.yml['projects'].append(prj)
+            yield prj
 
     def run(self):
-        try:
-            self.team = TowerTeam.get_by_name('TEAM_' + self.trigram)
-            self.yml['team'].update(dict(name=str(self.team.name)))
-            self.org = TowerOrganization.get_by_id(self.team.organization)
-            self.yml['organization'] = str(self.org.name)
-        except tower_cli.utils.exceptions.NotFound:
-            red('Team {} not found'.format('TEAM_' + self.trigram))
-            return
+        for team_name in TowerTeam.list_names_by_trigram(self.trigram):
+            job_related_resources = []
+            yml = dict(organization=None, team=dict(name=None, users=[]), projects=[],
+                       credentials=[], inventories=[], job_templates=[])
+            trigram = team_name.replace('TEAM_', '')
+            if not self.trigram:
+                filename = os.path.splitext(self.filename)[0] + '_' + \
+                    trigram.upper() + os.path.splitext(self.filename)[1]
+            else:
+                filename = self.filename
 
-        self._get_users_from_team()
-        self._get_creds_from_team()
+            try:
+                team = TowerTeam.get_by_name(team_name)
+                yml['team'].update(dict(name=str(team.name)))
+                org = TowerOrganization.get_by_id(team.organization)
+                yml['organization'] = str(org.name)
 
-        self._get_job_templates_from_trigram()
-        self._get_inventories_from_job_related_resources()
-        self._get_projects_from_job_related_resources()
-        # TODO
-        # Ajoute les creds qui ne sont pas deja recuperes par _get_creds_from_team
-        # self._get_creds_from_job_related_resources()
-        with open(self.filename, 'w') as output_file:
-            yaml.safe_dump(self.yml, default_flow_style=False, indent=2, stream=output_file)
+                for user in team.users():
+                    yml['team']['users'].append(user)
+
+                for cred in team.credentials():
+                    yml['credentials'].append(cred)
+
+                for job_tmpl, job_rel_res in TowerJobTemplate.find_by_trigram(trigram):
+                    job_related_resources.append(job_rel_res)
+                    yml['job_templates'].append(job_tmpl)
+
+                for inv in self._get_inventories_from_job_related_resources(job_related_resources):
+                    yml['inventories'].append(inv)
+                for prj in self._get_projects_from_job_related_resources(job_related_resources):
+                    yml['projects'].append(prj)
+                # TODO
+                # Ajoute les creds qui ne sont pas deja recuperes par _get_creds_from_team
+                # self._get_creds_from_job_related_resources()
+                with open(filename, 'w') as output_file:
+                    yaml.safe_dump(yml, default_flow_style=False, indent=2, stream=output_file)
+            except tower_cli.utils.exceptions.NotFound:
+                red('Team {} not found'.format(team_name))
+                continue
 
 
 if __name__ == '__main__':
@@ -680,11 +689,14 @@ if __name__ == '__main__':
             tower.run()
     elif args.command == 'dump':
         parser = argparse.ArgumentParser(description='Export data from Ansible Tower',
-                                         usage='tower.py dump [-h] <trigram> <filename>')
-        parser.add_argument('trigram', help='Trigram to export')
+                                         usage='tower.py dump [-h] <filename> [trigram]')
         parser.add_argument('filename', help='Path to output file')
+        parser.add_argument('-t', '--trigram',
+                            help='Trigram to export. If empty, export all trigrams. \
+                                  Each one in its own file.',
+                            required=False)
         args = parser.parse_args(sys.argv[2:])
-        tower = TowerDump(args.trigram.upper(), args.filename)
+        tower = TowerDump(args.filename, args.trigram)
         tower.run()
     else:
         sys.exit(1)
