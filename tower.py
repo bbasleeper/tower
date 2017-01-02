@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # pylint: disable=no-member,invalid-name,attribute-defined-outside-init
+# pylint: disable=too-many-instance-attributes, too-few-public-methods
 
 """
 Import/Export Ansible Tower resources (teams, users, projects, credentials,
@@ -16,8 +17,8 @@ import argparse
 import tempfile
 import string
 import random
-import yaml
 import json
+import yaml
 
 import tower_cli
 import requests
@@ -108,21 +109,22 @@ def has_duplicates(data, resource_type):
     return False
 
 
-def extra_vars_to_json(vars):
-    return json.dumps(yaml.load(vars))
+def extra_vars_to_json(extra_vars):
+    return json.dumps(yaml.load(extra_vars))
 
 
-def validate(import_data):
+def validate(data):
+    gray('Validating data before import...')
     is_data_valid = True
-    if 'team' not in import_data:
+    if 'team' not in data:
         red('Missing "team" section !!!')
         is_data_valid = False
-    elif 'name' not in import_data['team']:
+    elif 'name' not in data['team']:
         red('Missing "name" attribute in "team" section !!!')
         is_data_valid = False
 
-    if 'credentials' in import_data:
-        for cred in import_data['credentials']:
+    if 'credentials' in data:
+        for cred in data['credentials']:
             try:
                 if cred['vault_password'] == '$encrypted$':
                     red('You must set "vault_password" attribute in credential {name} !!!'.
@@ -131,30 +133,37 @@ def validate(import_data):
             except KeyError:
                 continue
 
-    if 'organization' in import_data and import_data['organization'] != BSC_ORG:
+    if 'organization' in data and data['organization'] != BSC_ORG:
         red('"organization" is not {} !!!'.format(BSC_ORG))
         is_data_valid = False
 
-    if has_duplicates(import_data, 'credentials'):
+    if has_duplicates(data, 'credentials'):
         is_data_valid = False
-    if has_duplicates(import_data, 'projects'):
+    if has_duplicates(data, 'projects'):
         is_data_valid = False
-    if has_duplicates(import_data, 'inventories'):
+    if has_duplicates(data, 'inventories'):
         is_data_valid = False
-    if has_duplicates(import_data, 'job_templates'):
+    if has_duplicates(data, 'job_templates'):
         is_data_valid = False
 
-    if 'job_templates' in import_data:
+    if 'users' in data['team']:
+        for user in data['team'].get('users', []):
+            if not user.get('external', True):
+                if 'password' not in user:
+                    red('Password must be set for user {username}'.format(**user))
+                    is_data_valid = False
+
+    if 'job_templates' in data:
         cred_resources = []
         prj_resources = []
         inv_resources = []
-        if 'credentials' in import_data:
-            cred_resources = [k['name'] for k in import_data['credentials']]
-        if 'inventories' in import_data:
-            inv_resources = [k['name'] for k in import_data['inventories']]
-        if 'projects' in import_data:
-            prj_resources = [k['name'] for k in import_data['projects']]
-        for job in import_data['job_templates']:
+        if 'credentials' in data:
+            cred_resources = [k['name'] for k in data['credentials']]
+        if 'inventories' in data:
+            inv_resources = [k['name'] for k in data['inventories']]
+        if 'projects' in data:
+            prj_resources = [k['name'] for k in data['projects']]
+        for job in data['job_templates']:
             if job['credential'] not in cred_resources:
                 red('Resource {credential} in job template {name} is missing !!!'.format(**job))
                 is_data_valid = False
@@ -164,6 +173,9 @@ def validate(import_data):
             if job['project'] not in prj_resources:
                 red('Resource {project} in job template {name} is missing !!!'.format(**job))
                 is_data_valid = False
+
+    if is_data_valid:
+        green('Import data ok')
 
     return is_data_valid
 
@@ -231,8 +243,8 @@ class TowerOrganization(TowerResource):
         return cls(**cls.res.get(name=name))
 
     @classmethod
-    def get_by_id(cls, id):
-        return cls(**cls.res.get(id=id))
+    def get_by_id(cls, org_id):
+        return cls(**cls.res.get(id=org_id))
 
     def associate(self, resource_id):
         self.res.associate(self.id, resource_id)
@@ -246,12 +258,12 @@ class TowerProject(TowerResource):
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_name(cls, name):
-        return cls(**cls.res.get(name=name))
+    def get_by_name(cls, prj_name):
+        return cls(**cls.res.get(name=prj_name))
 
     @classmethod
-    def get_by_id(cls, id):
-        return cls(**cls.res.get(id=id))
+    def get_by_id(cls, prj_id):
+        return cls(**cls.res.get(id=prj_id))
 
     def authorize_team(self, team):
         self.grant_permission(team, 'project', self, indent_level=1)
@@ -270,12 +282,12 @@ class TowerUser(TowerResource):
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_id(cls, id):
-        return cls(**cls.res.get(id=id))
+    def get_by_id(cls, user_id):
+        return cls(**cls.res.get(id=user_id))
 
     @classmethod
-    def get_by_name(cls, username):
-        return cls(**cls.res.get(username=username))
+    def get_by_name(cls, user_name):
+        return cls(**cls.res.get(username=user_name))
 
 
 class TowerTeam(TowerResource):
@@ -286,8 +298,8 @@ class TowerTeam(TowerResource):
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_name(cls, name):
-        return cls(**cls.res.get(name=name))
+    def get_by_name(cls, team_name):
+        return cls(**cls.res.get(name=team_name))
 
     def associate_users(self, users):
         print()
@@ -325,8 +337,8 @@ class TowerCredential(TowerResource):
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_name(cls, name):
-        return cls(**cls.res.get(name=name))
+    def get_by_name(cls, cred_name):
+        return cls(**cls.res.get(name=cred_name))
 
     def set_username(self, username):
         self.username = username
@@ -352,8 +364,8 @@ class TowerInventory(TowerResource):
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_id(cls, id):
-        return cls(**cls.res.get(id=id))
+    def get_by_id(cls, inv_id):
+        return cls(**cls.res.get(id=inv_id))
 
     def authorize_team(self, team, permission='read'):
         self.grant_permission(team, 'inventory', self, role_type=permission, indent_level=1)
@@ -401,8 +413,8 @@ class TowerJobTemplate(TowerResource):
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get(cls, name):
-        return cls(**cls.res.get(name=name))
+    def get(cls, job_name):
+        return cls(**cls.res.get(name=job_name))
 
     @classmethod
     def find_by_trigram(cls, trigram):
@@ -590,8 +602,8 @@ class TowerDump(TowerManager):
     def __init__(self, trigram, filename):
         super(TowerDump, self).__init__()
         self.job_related_resources = []
-        self.yml = dict(organization=None, team=None, projects=[], credentials=[],
-                        inventories=[], job_templates=[])
+        self.yml = dict(organization=None, team=dict(name=None, users=[]), projects=[],
+                        credentials=[], inventories=[], job_templates=[])
         self.trigram = trigram
         self.filename = filename
 
@@ -630,10 +642,11 @@ class TowerDump(TowerManager):
     def run(self):
         try:
             self.team = TowerTeam.get_by_name('TEAM_' + self.trigram)
-            self.yml['team'] = dict(name=str(self.team.name), users=[])
+            self.yml['team'].update(dict(name=str(self.team.name)))
             self.org = TowerOrganization.get_by_id(self.team.organization)
             self.yml['organization'] = str(self.org.name)
         except tower_cli.utils.exceptions.NotFound:
+            red('Team {} not found'.format('TEAM_' + self.trigram))
             return
 
         self._get_users_from_team()
@@ -663,15 +676,15 @@ if __name__ == '__main__':
             import_data = yaml.load(import_file.read())
 
         if validate(import_data):
-            t = TowerLoad(import_data)
-            t.run()
+            tower = TowerLoad(import_data)
+            tower.run()
     elif args.command == 'dump':
         parser = argparse.ArgumentParser(description='Export data from Ansible Tower',
                                          usage='tower.py dump [-h] <trigram> <filename>')
         parser.add_argument('trigram', help='Trigram to export')
         parser.add_argument('filename', help='Path to output file')
         args = parser.parse_args(sys.argv[2:])
-        t = TowerDump(args.trigram.upper(), args.filename)
-        t.run()
+        tower = TowerDump(args.trigram.upper(), args.filename)
+        tower.run()
     else:
         sys.exit(1)
