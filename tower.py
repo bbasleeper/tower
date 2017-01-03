@@ -627,6 +627,16 @@ class TowerJobTemplate(TowerResource):
                 except KeyError:
                     red('Template {} is not properly configured, skipping...'.format(tmpl['name']))
 
+    def add_survey(self, spec):
+        api_host = tower_cli.conf.settings.__getattr__('host')
+        api_auth = (tower_cli.conf.settings.__getattr__('username'),
+                    tower_cli.conf.settings.__getattr__('password'))
+        gray('  Adding survey to {}...'.format(self.name), end='')
+        survey_spec = dict(name='', description='', spec=spec)
+        r = requests.post('https://' + api_host + self.related['survey_spec'],
+                          auth=api_auth, verify=False, json=json.dumps(survey_spec))
+        green('ok') if r.ok else red('failed')
+
 
 class TowerManager(object):
     def __init__(self):
@@ -768,6 +778,8 @@ class TowerLoad(TowerManager):
                 template['extra_vars'] = [template['extra_vars']]
             new_job_template = TowerJobTemplate.create(**template)
             green('ok')
+            if 'survey_spec' in template:
+                new_job_template.add_survey(template['survey_spec'])
             self.job_templates[new_job_template.name] = new_job_template
 
     def run(self):
