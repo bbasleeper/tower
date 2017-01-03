@@ -452,8 +452,10 @@ class TowerTeam(TowerResource):
             credentials = r.json()['results']
             for cred in credentials:
                 if cred['kind'] == 'ssh':
-                    yield dict(username=str(cred['username']), name=str(cred['name'].upper()),
-                               vault_password=str(cred['vault_password']))
+                    result = dict(username=str(cred['username']), name=str(cred['name'].upper()))
+                    if len(cred['vault_password']) > 0:
+                        result.update(dict(vault_password=str(cred['vault_password'])))
+                    yield result
 
 
 class TowerCredential(TowerResource):
