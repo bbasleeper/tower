@@ -717,8 +717,9 @@ class TowerLoad(TowerManager):
                 if not already_exists:
                     cred.update(dict(organization=self.org.id, ssh_key_data=ssh_key['private'],
                                      ssh_key_unlock=ssh_key['password'],
-                                     kind=cred.get('kind', 'ssh'),
-                                     vault_password=cred.get('vault_password', password_gen())))
+                                     kind=cred.get('kind', 'ssh')))
+                    if 'vault_password' in cred:
+                        cred.update(dict(vault_password=cred['vault_password']))
                     new_cred = TowerCredential.create(**cred)
                 else:
                     # existing_cred.organization = self.org.id
