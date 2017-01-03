@@ -653,15 +653,19 @@ class TowerLoad(TowerManager):
         for user in userlist:
             gray('\t{username}...'.format(**user), end='')
             try:
-                if user.get('external', True):
-                    new_user = TowerUser.get_by_name(user['username'])
-                else:
-                    new_user = TowerUser.create(**user)
-                self.org.associate(new_user.id)
-                green('ok')
-                self.users[new_user.username] = new_user
+                user['username'] = user['username'].lower()
+                # if user.get('external', True):
+                new_user = TowerUser.get_by_name(user['username'])
+                yellow('already exists, do nothing')
+                # else:
             except tower_cli.utils.exceptions.NotFound:
-                red('failed')
+                if 'password' not in user:
+                    user['password'] = password_gen()
+                new_user = TowerUser.create(**user)
+                green('ok')
+
+            self.org.associate(new_user.id)
+            self.users[new_user.username] = new_user
 
     def _create_team(self, team_data):
         team_data.update(dict(organization=self.org.id,
@@ -813,6 +817,7 @@ class TowerDump(TowerManager):
                 filename = self.filename
 
             try:
+                gray('Exporting data for team {} to {}...'.format(team_name, filename))
                 team = TowerTeam.get_by_name(team_name)
                 yml['team'].update(dict(name=str(team.name)))
                 org = TowerOrganization.get_by_id(team.organization)
