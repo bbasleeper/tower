@@ -654,15 +654,17 @@ class TowerLoad(TowerManager):
             gray('\t{username}...'.format(**user), end='')
             try:
                 user['username'] = user['username'].lower()
-                # if user.get('external', True):
-                new_user = TowerUser.get_by_name(user['username'])
-                yellow('already exists, do nothing')
-                # else:
+                if user.get('external', True):
+                    new_user = TowerUser.get_by_name(user['username'])
+                    green('already exists')
+                else:
+                    if 'password' not in user:
+                        user['password'] = password_gen()
+                    new_user = TowerUser.create(**user)
+                    green('created')
             except tower_cli.utils.exceptions.NotFound:
-                if 'password' not in user:
-                    user['password'] = password_gen()
-                new_user = TowerUser.create(**user)
-                green('ok')
+                yellow(' does not exist in Tower, skipping')
+                continue
 
             self.org.associate(new_user.id)
             self.users[new_user.username] = new_user
