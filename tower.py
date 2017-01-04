@@ -776,6 +776,8 @@ class TowerLoad(TowerManager):
             template['project'] = self.projects.get(template['project']).id
             if 'extra_vars' in template:
                 template['extra_vars'] = [template['extra_vars']]
+            if 'survey_spec' in template:
+                template['survey_enabled'] = True
             new_job_template = TowerJobTemplate.create(**template)
             green('ok')
             if 'survey_spec' in template:
