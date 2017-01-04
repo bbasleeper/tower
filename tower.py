@@ -634,7 +634,7 @@ class TowerJobTemplate(TowerResource):
         gray('  Adding survey to {}...'.format(self.name), end='')
         survey_spec = dict(name='', description='', spec=spec)
         r = requests.post('https://' + api_host + self.related['survey_spec'],
-                          auth=api_auth, verify=False, json=json.dumps(survey_spec))
+                          auth=api_auth, verify=False, json=survey_spec)
         green('ok') if r.ok else red('failed')
 
 
