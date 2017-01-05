@@ -1,16 +1,24 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # pylint: disable=no-member,invalid-name,attribute-defined-outside-init
+# pylint: disable=too-many-instance-attributes, too-few-public-methods
+
+"""
+Import/Export Ansible Tower resources (teams, users, projects, credentials,
+inventories and job templates)
+"""
 
 from __future__ import print_function
 
 import sys
 import os
+import os.path
 import time
 import argparse
 import tempfile
 import string
 import random
+import json
 import yaml
 
 import tower_cli
@@ -47,30 +55,90 @@ ROLE_RES = tower_cli.get_resource('role')
 
 # Helper functions
 def red(text, end='\n'):
+    """
+    Prints a message in RED
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[91m {}\033[00m" .format(text), end=end)
 
 
 def green(text, end='\n'):
+    """
+    Prints a message in GREEN
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[92m {}\033[00m" .format(text), end=end)
 
 
 def yellow(text, end='\n'):
+    """
+    Prints a message in YELLOW
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[93m {}\033[00m" .format(text), end=end)
 
 
 def blue(text, end='\n'):
+    """
+    Prints a message in BLUE
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[96m {}\033[00m" .format(text), end=end)
 
 
 def gray(text, end='\n'):
+    """
+    Prints a message in GRAY
+
+    :param text: The text to print
+    :param end: The character to print at the end of the line.
+    :type text: string
+    :type end: string
+    """
     print("\033[97m {}\033[00m" .format(text), end=end)
 
 
 def password_gen(size=14, chars=string.ascii_letters + string.digits + string.punctuation):
+    """
+    Generates a random password
+
+    :param size: Length of the password.
+    :param chars: List of characters to use to generate the password.
+    :type size: int
+    :type chars: string
+    :return: The generated password.
+    :rtype: string
+    """
     return ''.join(random.choice(chars) for _ in range(size))
 
 
 def generate_ssh_key(password, bits=SSH_KEY_BITS):
+    """
+    Generates a password protected SSH key
+
+    :param password: Password used to encrypt the key.
+    :param bits: Length of the bits used for the key.
+    :type password: string
+    :type bits: int
+    :return: The generated SSH key.
+    :rtype: dict
+    """
     rsakey = RSAKey.generate(bits)
     # We use a temporary file to get ssh private key
     # because RSAKey.write_private_key method does not
@@ -87,6 +155,9 @@ def generate_ssh_key(password, bits=SSH_KEY_BITS):
 
 
 def has_duplicates(data, resource_type):
+    """
+    Check if a resource is duplicated.
+    """
     if resource_type in data:
         resources = {}
         for r in data[resource_type]:
@@ -102,21 +173,28 @@ def has_duplicates(data, resource_type):
     return False
 
 
-def extra_vars_to_list(vars):
-    return ['{}={}'.format(k, v) for k, v in yaml.load(vars).iteritems()]
+def extra_vars_to_json(extra_vars):
+    """
+    Convert 'extra_vars' from yaml to json.
+    """
+    return json.dumps(yaml.load(extra_vars))
 
 
-def validate(import_data):
+def validate(data):
+    """
+    Validates yaml data before importing into Ansible Tower
+    """
+    gray('Validating data before import...')
     is_data_valid = True
-    if 'team' not in import_data:
+    if 'team' not in data:
         red('Missing "team" section !!!')
         is_data_valid = False
-    elif 'name' not in import_data['team']:
+    elif 'name' not in data['team']:
         red('Missing "name" attribute in "team" section !!!')
         is_data_valid = False
 
-    if 'credentials' in import_data:
-        for cred in import_data['credentials']:
+    if 'credentials' in data:
+        for cred in data['credentials']:
             try:
                 if cred['vault_password'] == '$encrypted$':
                     red('You must set "vault_password" attribute in credential {name} !!!'.
@@ -125,30 +203,37 @@ def validate(import_data):
             except KeyError:
                 continue
 
-    if 'organization' in import_data and import_data['organization'] != BSC_ORG:
+    if 'organization' in data and data['organization'] != BSC_ORG:
         red('"organization" is not {} !!!'.format(BSC_ORG))
         is_data_valid = False
 
-    if has_duplicates(import_data, 'credentials'):
+    if has_duplicates(data, 'credentials'):
         is_data_valid = False
-    if has_duplicates(import_data, 'projects'):
+    if has_duplicates(data, 'projects'):
         is_data_valid = False
-    if has_duplicates(import_data, 'inventories'):
+    if has_duplicates(data, 'inventories'):
         is_data_valid = False
-    if has_duplicates(import_data, 'job_templates'):
+    if has_duplicates(data, 'job_templates'):
         is_data_valid = False
 
-    if 'job_templates' in import_data:
+    if 'users' in data['team']:
+        for user in data['team'].get('users', []):
+            if not user.get('external', True):
+                if 'password' not in user:
+                    red('Password must be set for user {username}'.format(**user))
+                    is_data_valid = False
+
+    if 'job_templates' in data:
         cred_resources = []
         prj_resources = []
         inv_resources = []
-        if 'credentials' in import_data:
-            cred_resources = [k['name'] for k in import_data['credentials']]
-        if 'inventories' in import_data:
-            inv_resources = [k['name'] for k in import_data['inventories']]
-        if 'projects' in import_data:
-            prj_resources = [k['name'] for k in import_data['projects']]
-        for job in import_data['job_templates']:
+        if 'credentials' in data:
+            cred_resources = [k['name'] for k in data['credentials']]
+        if 'inventories' in data:
+            inv_resources = [k['name'] for k in data['inventories']]
+        if 'projects' in data:
+            prj_resources = [k['name'] for k in data['projects']]
+        for job in data['job_templates']:
             if job['credential'] not in cred_resources:
                 red('Resource {credential} in job template {name} is missing !!!'.format(**job))
                 is_data_valid = False
@@ -158,6 +243,9 @@ def validate(import_data):
             if job['project'] not in prj_resources:
                 red('Resource {project} in job template {name} is missing !!!'.format(**job))
                 is_data_valid = False
+
+    if is_data_valid:
+        green('Import data ok')
 
     return is_data_valid
 
@@ -222,13 +310,22 @@ class TowerOrganization(TowerResource):
 
     @classmethod
     def get_by_name(cls, name):
+        """
+        Get tower organization by name
+        """
         return cls(**cls.res.get(name=name))
 
     @classmethod
-    def get_by_id(cls, id):
-        return cls(**cls.res.get(id=id))
+    def get_by_id(cls, org_id):
+        """
+        Get tower organization by id
+        """
+        return cls(**cls.res.get(id=org_id))
 
     def associate(self, resource_id):
+        """
+        Associates a resource to this organization
+        """
         self.res.associate(self.id, resource_id)
 
 
@@ -237,20 +334,35 @@ class TowerProject(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Creates a tower project
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_name(cls, name):
-        return cls(**cls.res.get(name=name))
+    def get_by_name(cls, prj_name):
+        """
+        Get a towerproject by name
+        """
+        return cls(**cls.res.get(name=prj_name))
 
     @classmethod
-    def get_by_id(cls, id):
-        return cls(**cls.res.get(id=id))
+    def get_by_id(cls, prj_id):
+        """
+        Get a tower project by id
+        """
+        return cls(**cls.res.get(id=prj_id))
 
     def authorize_team(self, team):
+        """
+        Grants permission on this project to specified team
+        """
         self.grant_permission(team, 'project', self, indent_level=1)
 
     def sync(self):
+        """
+        Ask Ansible Tower to launch a project sync
+        """
         self.res.update(pk=self.id)
         yellow('Waiting {} seconds for project syncing...'.format(PROJECT_SYNC_WAIT_TIME))
         time.sleep(PROJECT_SYNC_WAIT_TIME)
@@ -261,15 +373,24 @@ class TowerUser(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create a tower user
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_id(cls, id):
-        return cls(**cls.res.get(id=id))
+    def get_by_id(cls, user_id):
+        """
+        Get a tower user by id
+        """
+        return cls(**cls.res.get(id=user_id))
 
     @classmethod
-    def get_by_name(cls, username):
-        return cls(**cls.res.get(username=username))
+    def get_by_name(cls, user_name):
+        """
+        Get a tower user by name
+        """
+        return cls(**cls.res.get(username=user_name))
 
 
 class TowerTeam(TowerResource):
@@ -277,13 +398,31 @@ class TowerTeam(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create a tower team
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_name(cls, name):
-        return cls(**cls.res.get(name=name))
+    def get_by_name(cls, team_name):
+        """
+        Get a tower team by name
+        """
+        return cls(**cls.res.get(name=team_name))
+
+    @classmethod
+    def list_names_by_trigram(cls, trigram):
+        """
+        List all team names matching a trigram, or all teams if trigram is None
+        """
+        for team in cls.res.list(all_pages=True)['results']:
+            if trigram is None or team['name'].upper() == 'TEAM_' + trigram.upper():
+                yield team['name']
 
     def associate_users(self, users):
+        """
+        Associates users to this team
+        """
         print()
         gray('Associating users to team ' + self.name + '...')
         for username, user in users.iteritems():
@@ -292,6 +431,9 @@ class TowerTeam(TowerResource):
             green('ok')
 
     def users(self):
+        """
+        Get all users associated to this team
+        """
         r = requests.get('https://' + self.api_host + self.related['users'],
                          auth=self.api_auth, verify=False)
         if r.ok:
@@ -301,14 +443,19 @@ class TowerTeam(TowerResource):
                            first_name=str(user['first_name']), last_name=str(user['last_name']))
 
     def credentials(self):
+        """
+        Get all credentials associated to this team
+        """
         r = requests.get('https://' + self.api_host + self.related['credentials'],
                          auth=self.api_auth, verify=False)
         if r.ok:
             credentials = r.json()['results']
             for cred in credentials:
                 if cred['kind'] == 'ssh':
-                    yield dict(username=str(cred['username']), name=str(cred['name'].upper()),
-                               vault_password=str(cred['vault_password']))
+                    result = dict(username=str(cred['username']), name=str(cred['name'].upper()))
+                    if len(cred['vault_password']) > 0:
+                        result.update(dict(vault_password=str(cred['vault_password'])))
+                    yield result
 
 
 class TowerCredential(TowerResource):
@@ -316,25 +463,46 @@ class TowerCredential(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create a tower credential
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_name(cls, name):
-        return cls(**cls.res.get(name=name))
+    def get_by_name(cls, cred_name):
+        """
+        Get a tower credential by name
+        """
+        return cls(**cls.res.get(name=cred_name))
 
     def set_username(self, username):
+        """
+        Change credential username
+        """
         self.username = username
 
     def set_key_data(self, key_data):
+        """
+        Change credential SSH private key
+        """
         self.ssh_key_data = key_data
 
     def set_key_unlock(self, password):
+        """
+        Change credential SSH private key password
+        """
         self.ssh_key_unlock = password
 
     def save(self):
+        """
+        Save changes to Ansible Tower
+        """
         self.res.modify(pk=self.id, **self.__dict__)
 
     def authorize_team(self, team):
+        """
+        Allow 'use' permission to specified team on this credential
+        """
         self.grant_permission(team, 'credential', self, indent_level=1)
 
 
@@ -343,16 +511,28 @@ class TowerInventory(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create tower inventory
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get_by_id(cls, id):
-        return cls(**cls.res.get(id=id))
+    def get_by_id(cls, inv_id):
+        """
+        Get tower inventory by id
+        """
+        return cls(**cls.res.get(id=inv_id))
 
     def authorize_team(self, team, permission='read'):
+        """
+        Allow permission to specified team on this inventory
+        """
         self.grant_permission(team, 'inventory', self, role_type=permission, indent_level=1)
 
     def groups(self):
+        """
+        Returns groups (and hosts in each group) of the inventory
+        """
         r = requests.get('https://' + self.api_host + self.related['groups'],
                          auth=self.api_auth, verify=False)
         if r.ok:
@@ -373,6 +553,9 @@ class TowerInventoryGroup(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create inventory group
+        """
         return cls(**cls.res.create(**entries))
 
 
@@ -381,9 +564,15 @@ class TowerInventoryHost(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create inventory host
+        """
         return cls(**cls.res.create(**entries))
 
     def add_to_group(self, group_id):
+        """
+        Associate host to group
+        """
         self.res.associate(self.id, group_id)
 
 
@@ -392,14 +581,23 @@ class TowerJobTemplate(TowerResource):
 
     @classmethod
     def create(cls, **entries):
+        """
+        Create tower job template
+        """
         return cls(**cls.res.create(**entries))
 
     @classmethod
-    def get(cls, name):
-        return cls(**cls.res.get(name=name))
+    def get(cls, job_name):
+        """
+        Get tower job template by name
+        """
+        return cls(**cls.res.get(name=job_name))
 
     @classmethod
     def find_by_trigram(cls, trigram):
+        """
+        Returns job templates matching a trigram
+        """
         job_templates = cls.res.list(all_pages=True)
         for tmpl in job_templates['results']:
             if tmpl['name'].upper().startswith('JOB_{}_'.format(trigram)):
@@ -411,7 +609,7 @@ class TowerJobTemplate(TowerResource):
                              playbook=str(tmpl['playbook']))
 
                     if len(tmpl['extra_vars']) > 0:
-                        t.update(extra_vars=extra_vars_to_list(tmpl['extra_vars']))
+                        t.update(extra_vars=extra_vars_to_json(tmpl['extra_vars']))
 
                     if bool(tmpl['survey_enabled']):
                         api_host = tower_cli.conf.settings.__getattr__('host')
@@ -428,6 +626,16 @@ class TowerJobTemplate(TowerResource):
                                    project=tmpl['project']))
                 except KeyError:
                     red('Template {} is not properly configured, skipping...'.format(tmpl['name']))
+
+    def add_survey(self, spec):
+        api_host = tower_cli.conf.settings.__getattr__('host')
+        api_auth = (tower_cli.conf.settings.__getattr__('username'),
+                    tower_cli.conf.settings.__getattr__('password'))
+        gray('  Adding survey to {}...'.format(self.name), end='')
+        survey_spec = dict(name='', description='', spec=spec)
+        r = requests.post('https://' + api_host + self.related['survey_spec'],
+                          auth=api_auth, verify=False, json=survey_spec)
+        green('ok') if r.ok else red('failed')
 
 
 class TowerManager(object):
@@ -457,15 +665,21 @@ class TowerLoad(TowerManager):
         for user in userlist:
             gray('\t{username}...'.format(**user), end='')
             try:
+                user['username'] = user['username'].lower()
                 if user.get('external', True):
                     new_user = TowerUser.get_by_name(user['username'])
+                    green('already exists')
                 else:
+                    if 'password' not in user:
+                        user['password'] = password_gen()
                     new_user = TowerUser.create(**user)
-                self.org.associate(new_user.id)
-                green('ok')
-                self.users[new_user.username] = new_user
+                    green('created')
             except tower_cli.utils.exceptions.NotFound:
-                red('failed')
+                yellow(' does not exist in Tower, skipping')
+                continue
+
+            self.org.associate(new_user.id)
+            self.users[new_user.username] = new_user
 
     def _create_team(self, team_data):
         team_data.update(dict(organization=self.org.id,
@@ -513,8 +727,9 @@ class TowerLoad(TowerManager):
                 if not already_exists:
                     cred.update(dict(organization=self.org.id, ssh_key_data=ssh_key['private'],
                                      ssh_key_unlock=ssh_key['password'],
-                                     kind=cred.get('kind', 'ssh'),
-                                     vault_password=cred.get('vault_password', password_gen())))
+                                     kind=cred.get('kind', 'ssh')))
+                    if 'vault_password' in cred:
+                        cred.update(dict(vault_password=cred['vault_password']))
                     new_cred = TowerCredential.create(**cred)
                 else:
                     # existing_cred.organization = self.org.id
@@ -559,8 +774,14 @@ class TowerLoad(TowerManager):
             template['credential'] = self.credentials.get(template['credential']).id
             template['inventory'] = self.inventories.get(template['inventory']).id
             template['project'] = self.projects.get(template['project']).id
+            if 'extra_vars' in template:
+                template['extra_vars'] = [template['extra_vars']]
+            if 'survey_spec' in template:
+                template['survey_enabled'] = True
             new_job_template = TowerJobTemplate.create(**template)
             green('ok')
+            if 'survey_spec' in template:
+                new_job_template.add_survey(template['survey_spec'])
             self.job_templates[new_job_template.name] = new_job_template
 
     def run(self):
@@ -579,66 +800,70 @@ class TowerLoad(TowerManager):
 
 
 class TowerDump(TowerManager):
-    def __init__(self, trigram, filename):
+    def __init__(self, filename, trigram=None):
         super(TowerDump, self).__init__()
-        self.job_related_resources = []
-        self.yml = dict(organization=None, team=None, projects=[], credentials=[],
-                        inventories=[], job_templates=[])
         self.trigram = trigram
         self.filename = filename
 
-    def _get_users_from_team(self):
-        for user in self.team.users():
-            self.yml['team']['users'].append(user)
-
-    def _get_creds_from_team(self):
-        for cred in self.team.credentials():
-            self.yml['credentials'].append(cred)
-
-    def _get_job_templates_from_trigram(self):
-        for job_tmpl, job_rel_res in TowerJobTemplate.find_by_trigram(self.trigram):
-            self.job_related_resources.append(job_rel_res)
-            self.yml['job_templates'].append(job_tmpl)
-
-    def _get_inventories_from_job_related_resources(self):
-        inv_to_get = set([i['inventory'] for i in self.job_related_resources])
+    def _get_inventories_from_job_related_resources(self, job_related_resources):
+        inv_to_get = set([i['inventory'] for i in job_related_resources])
         for inventory_id in inv_to_get:
             inventory = TowerInventory.get_by_id(inventory_id)
             groups = []
             for group in inventory.groups():
                 groups.append(group)
-            self.yml['inventories'].append(dict(name=str(inventory.name),
-                                                groups=groups))
+            yield dict(name=str(inventory.name), groups=groups)
 
-    def _get_projects_from_job_related_resources(self):
-        prj_to_get = set([i['project'] for i in self.job_related_resources])
+    def _get_projects_from_job_related_resources(self, job_related_resources):
+        prj_to_get = set([i['project'] for i in job_related_resources])
         for project_id in prj_to_get:
             project = TowerProject.get_by_id(project_id)
             prj = dict(name=str(project.name), scm_url=str(project.scm_url))
             if len(project.scm_branch) > 0:
                 prj.update(scm_branch=str(project.scm_branch))
-            self.yml['projects'].append(prj)
+            yield prj
 
     def run(self):
-        try:
-            self.team = TowerTeam.get_by_name('TEAM_' + self.trigram)
-            self.yml['team'] = dict(name=str(self.team.name), users=[])
-            self.org = TowerOrganization.get_by_id(self.team.organization)
-            self.yml['organization'] = str(self.org.name)
-        except tower_cli.utils.exceptions.NotFound:
-            return
+        for team_name in TowerTeam.list_names_by_trigram(self.trigram):
+            job_related_resources = []
+            yml = dict(organization=None, team=dict(name=None, users=[]), projects=[],
+                       credentials=[], inventories=[], job_templates=[])
+            trigram = team_name.replace('TEAM_', '')
+            if not self.trigram:
+                filename = os.path.splitext(self.filename)[0] + '_' + \
+                    trigram.upper() + os.path.splitext(self.filename)[1]
+            else:
+                filename = self.filename
 
-        self._get_users_from_team()
-        self._get_creds_from_team()
+            try:
+                gray('Exporting data for team {} to {}...'.format(team_name, filename))
+                team = TowerTeam.get_by_name(team_name)
+                yml['team'].update(dict(name=str(team.name)))
+                org = TowerOrganization.get_by_id(team.organization)
+                yml['organization'] = str(org.name)
 
-        self._get_job_templates_from_trigram()
-        self._get_inventories_from_job_related_resources()
-        self._get_projects_from_job_related_resources()
-        # TODO
-        # Ajoute les creds qui ne sont pas deja recuperes par _get_creds_from_team
-        # self._get_creds_from_job_related_resources()
-        with open(self.filename, 'w') as output_file:
-            yaml.safe_dump(self.yml, default_flow_style=False, indent=2, stream=output_file)
+                for user in team.users():
+                    yml['team']['users'].append(user)
+
+                for cred in team.credentials():
+                    yml['credentials'].append(cred)
+
+                for job_tmpl, job_rel_res in TowerJobTemplate.find_by_trigram(trigram):
+                    job_related_resources.append(job_rel_res)
+                    yml['job_templates'].append(job_tmpl)
+
+                for inv in self._get_inventories_from_job_related_resources(job_related_resources):
+                    yml['inventories'].append(inv)
+                for prj in self._get_projects_from_job_related_resources(job_related_resources):
+                    yml['projects'].append(prj)
+                # TODO
+                # Ajoute les creds qui ne sont pas deja recuperes par _get_creds_from_team
+                # self._get_creds_from_job_related_resources()
+                with open(filename, 'w') as output_file:
+                    yaml.safe_dump(yml, default_flow_style=False, indent=2, stream=output_file)
+            except tower_cli.utils.exceptions.NotFound:
+                red('Team {} not found'.format(team_name))
+                continue
 
 
 if __name__ == '__main__':
@@ -655,15 +880,18 @@ if __name__ == '__main__':
             import_data = yaml.load(import_file.read())
 
         if validate(import_data):
-            t = TowerLoad(import_data)
-            t.run()
+            tower = TowerLoad(import_data)
+            tower.run()
     elif args.command == 'dump':
         parser = argparse.ArgumentParser(description='Export data from Ansible Tower',
-                                         usage='tower.py dump [-h] <trigram> <filename>')
-        parser.add_argument('trigram', help='Trigram to export')
+                                         usage='tower.py dump [-h] <filename> [trigram]')
         parser.add_argument('filename', help='Path to output file')
+        parser.add_argument('-t', '--trigram',
+                            help='Trigram to export. If empty, export all trigrams. \
+                                  Each one in its own file.',
+                            required=False)
         args = parser.parse_args(sys.argv[2:])
-        t = TowerDump(args.trigram.upper(), args.filename)
-        t.run()
+        tower = TowerDump(args.filename, args.trigram)
+        tower.run()
     else:
         sys.exit(1)
