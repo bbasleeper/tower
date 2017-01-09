@@ -18,6 +18,7 @@ import argparse
 import tempfile
 import string
 import random
+import re
 import json
 import yaml
 
@@ -39,6 +40,7 @@ BSC_ORG = 'BSC'
 SSH_KEY_BITS = 2048
 PROJECT_SYNC_WAIT_TIME = 15
 EDGE_DEFAULT_USER = 'automation'
+APP_MGMT_MODE = ['legacy', 'devops']
 ROLE_TYPES = ['admin', 'read', 'member', 'owner', 'execute', 'adhoc', 'update', 'use', 'auditor']
 RESOURCE_TYPES = ['project', 'inventory', 'job_template', 'credential']
 ORG_RES = tower_cli.get_resource('organization')
@@ -180,6 +182,13 @@ def extra_vars_to_json(extra_vars):
     return json.dumps(yaml.load(extra_vars))
 
 
+def find_jenkins_user(users):
+    for username in users.keys():
+        if username.lower().startswith('jenkins_'):
+            return username
+    return None
+
+
 def validate(data):
     """
     Validates yaml data before importing into Ansible Tower
@@ -191,6 +200,10 @@ def validate(data):
         is_data_valid = False
     elif 'name' not in data['team']:
         red('Missing "name" attribute in "team" section !!!')
+        is_data_valid = False
+
+    if 'app_mode' in data and data['app_mode'] not in APP_MGMT_MODE:
+        red('Unknown application mode <{}> !!!'.format(data['app_mode']))
         is_data_valid = False
 
     if 'credentials' in data:
@@ -262,7 +275,7 @@ class TowerResource(object):
                          tower_cli.conf.settings.__getattr__('password'))
         self.__dict__.update(entries)
 
-    def grant_permission(self, team, resource_type, resource, role_type='use', indent_level=0):
+    def grant_team_permission(self, team, resource_type, resource, role_type='use', indent_level=0):
         """
             Grant permission on a resource for a team
 
@@ -300,6 +313,48 @@ class TowerResource(object):
             gray('\t' * indent_level, end='')
             yellow('Granting {} permission to team {}...'
                    .format(role_type, team.name),
+                   end='')
+        self.role_res.grant(**role_data)
+        green('ok')
+
+    def grant_user_permission(self, user, resource_type, resource, role_type='use', indent_level=0):
+        """
+            Grant permission on a resource for a user
+
+            This function grants **role_type** permission on **resource**
+            of type **resource_type** for the user **user**.
+            :param user: The user to grant permission to
+            :param resource_type: The type of the resource to grant permission to.
+                                  Value should belong to **RESOURCE_TYPES** constant.
+            :param resource: The name of the resource to grant permission to
+            :param role_type: The permission type to grant
+            :type user: Dictionary coming from *create_user*
+            :type resource_type: string
+            :type resource: string
+            :type role_type: string
+        """
+        if resource_type not in self.resource_types:
+            red('Granting permission failed, unknown resource type {}'.format(resource_type))
+            return
+
+        if role_type not in self.role_types:
+            red('Granting permission failed, unknown permission type {}'.format(role_type))
+            return
+
+        if indent_level < 0:
+            indent_level = 0
+
+        role_data = dict(user=user.id, type=role_type)
+        role_data[resource_type] = resource.id
+        if indent_level == 0:
+            print()
+            yellow('Granting {} on {} {} to user {}...'
+                   .format(role_type, resource_type, resource.name, user.username),
+                   end='')
+        else:
+            gray('\t' * indent_level, end='')
+            yellow('Granting {} permission to user {}...'
+                   .format(role_type, user.username),
                    end='')
         self.role_res.grant(**role_data)
         green('ok')
@@ -353,11 +408,17 @@ class TowerProject(TowerResource):
         """
         return cls(**cls.res.get(id=prj_id))
 
-    def authorize_team(self, team):
+    def authorize_team(self, team, permission='use'):
         """
         Grants permission on this project to specified team
         """
-        self.grant_permission(team, 'project', self, indent_level=1)
+        self.grant_team_permission(team, 'project', self, role_type=permission, indent_level=1)
+
+    def authorize_user(self, user, permission='use'):
+        """
+        Grants permission on this project to specified user
+        """
+        self.grant_user_permission(user, 'project', self, role_type=permission, indent_level=1)
 
     def sync(self):
         """
@@ -499,11 +560,17 @@ class TowerCredential(TowerResource):
         """
         self.res.modify(pk=self.id, **self.__dict__)
 
-    def authorize_team(self, team):
+    def authorize_team(self, team, permission='use'):
         """
         Allow 'use' permission to specified team on this credential
         """
-        self.grant_permission(team, 'credential', self, indent_level=1)
+        self.grant_team_permission(team, 'credential', self, role_type=permission, indent_level=1)
+
+    def authorize_user(self, user, permission='use'):
+        """
+        Allow 'use' permission to specified user on this credential
+        """
+        self.grant_user_permission(user, 'credential', self, role_type=permission, indent_level=1)
 
 
 class TowerInventory(TowerResource):
@@ -527,7 +594,13 @@ class TowerInventory(TowerResource):
         """
         Allow permission to specified team on this inventory
         """
-        self.grant_permission(team, 'inventory', self, role_type=permission, indent_level=1)
+        self.grant_team_permission(team, 'inventory', self, role_type=permission, indent_level=1)
+
+    def authorize_user(self, user, permission='read'):
+        """
+        Allow permission to specified user on this inventory
+        """
+        self.grant_user_permission(user, 'inventory', self, role_type=permission, indent_level=1)
 
     def groups(self):
         """
@@ -637,6 +710,18 @@ class TowerJobTemplate(TowerResource):
                           auth=api_auth, verify=False, json=survey_spec)
         green('ok') if r.ok else red('failed')
 
+    def authorize_team(self, team, permission='execute'):
+        """
+        Allow permission to specified team on this job template
+        """
+        self.grant_team_permission(team, 'job_template', self, role_type=permission, indent_level=1)
+
+    def authorize_user(self, user, permission='execute'):
+        """
+        Allow permission to specified user on this job template
+        """
+        self.grant_user_permission(user, 'job_template', self, role_type=permission, indent_level=1)
+
 
 def create_team(org, team_data):
     team_data.update(dict(organization=org.id,
@@ -672,8 +757,9 @@ def create_users(userlist):
         yield new_user
 
 
-def create_projects(org, team, projects):
+def create_projects(app_mode, org, user, team, projects):
     print()
+    prj_dev_regex = re.compile(r'PROJECT_[A-Z0-9]{3}D')
     for prj in projects:
         gray('Creating project {name}...'.format(**prj), end='')
         prj.update(dict(scm_type=prj.get('scm_type', 'git'),
@@ -684,12 +770,21 @@ def create_projects(org, team, projects):
         new_prj = TowerProject.create(**prj)
         green('ok')
         new_prj.sync()
-        new_prj.authorize_team(team)
+        prj_env_dev = prj_dev_regex.match(prj['name'])
+        if app_mode == 'legacy':
+            if prj_env_dev is None:
+                if user is not None:
+                    new_prj.authorize_user(user)
+            else:
+                new_prj.authorize_team(team, permission='admin')
+        else:
+            new_prj.authorize_team(team, permission='admin')
 
         yield new_prj
 
 
-def create_credentials(org, team, credentials):
+def create_credentials(app_mode, org, user, team, credentials):
+    cred_dev_regex = re.compile(r'CRED_SERVER_[A-Z0-9]{3}D')
     for cred in credentials:
         force_update = cred.get('force_update', False)
         try:
@@ -726,12 +821,21 @@ def create_credentials(org, team, credentials):
         else:
             gray('Credential {name} already exists, skipping...'.format(**cred), end='')
         green('ok')
-        new_cred.authorize_team(team)
+        cred_env_dev = cred_dev_regex.match(cred['name'])
+        if app_mode == 'legacy':
+            if cred_env_dev is None:
+                if user is not None:
+                    new_cred.authorize_user(user)
+            else:
+                new_cred.authorize_team(team)
+        else:
+            new_cred.authorize_team(team, permission='admin')
 
         yield new_cred
 
 
-def create_inventories(org, team, invlist):
+def create_inventories(app_mode, org, user, team, invlist):
+    inv_dev_regex = re.compile(r'INV_[A-Z0-9]{3}_[A-Z0-9\-]+_D')
     for inv in invlist:
         print()
         gray('Creating inventory {name}...'.format(**inv), end='')
@@ -749,12 +853,21 @@ def create_inventories(org, team, invlist):
                 new_host = TowerInventoryHost.create(**host)
                 new_host.add_to_group(new_group.id)
                 green('ok')
-        new_inv.authorize_team(team)
+        inv_env_dev = inv_dev_regex.match(inv['name'])
+        if app_mode == 'legacy':
+            if inv_env_dev is None:
+                if user is not None:
+                    new_inv.authorize_user(user)
+            else:
+                new_inv.authorize_team(team, permission='admin')
+        else:
+            new_inv.authorize_team(team, permission='admin')
 
         yield new_inv
 
 
-def create_job_templates(org, credentials, inventories, projects, templates):
+def create_job_templates(app_mode, org, user, team, credentials, inventories, projects, templates):
+    job_dev_regex = re.compile(r'JOB_[A-Z0-9]{3}_[A-Z0-9\-]+_D')
     for template in templates:
         print()
         gray('Creating job template {name}...'.format(**template), end='')
@@ -771,6 +884,16 @@ def create_job_templates(org, credentials, inventories, projects, templates):
         if 'survey_spec' in template:
             new_job_template.add_survey(template['survey_spec'])
 
+        job_env_dev = job_dev_regex.match(template['name'])
+        if app_mode == 'legacy':
+            if job_env_dev is None:
+                if user is not None:
+                    new_job_template.authorize_user(user)
+            else:
+                new_job_template.authorize_team(team, permission='admin')
+        else:
+            new_job_template.authorize_team(team, permission='admin')
+
 
 def tower_load(data):
     org = None
@@ -786,17 +909,25 @@ def tower_load(data):
         return
 
     team = create_team(org, data['team'])
+    app_mode = data.get('app_mode', 'devops')
     for new_user in create_users(data['team'].get('users', [])):
         org.associate(new_user.id)
         users[new_user.username] = new_user
     team.associate_users(users)
-    for new_prj in create_projects(org, team, data.get('projects', [])):
+    try:
+        jenkins_user = users[find_jenkins_user(users)]
+    except KeyError:
+        jenkins_user = None
+    for new_prj in create_projects(app_mode, org, jenkins_user, team, data.get('projects', [])):
         projects[new_prj.name] = new_prj
-    for new_cred in create_credentials(org, team, data.get('credentials', [])):
+    for new_cred in create_credentials(app_mode, org, jenkins_user, team,
+                                       data.get('credentials', [])):
         credentials[new_cred.name] = new_cred
-    for new_inv in create_inventories(org, team, data.get('inventories', [])):
+    for new_inv in create_inventories(app_mode, org, jenkins_user, team,
+                                      data.get('inventories', [])):
         inventories[new_inv.name] = new_inv
-    create_job_templates(org, credentials, inventories, projects, data.get('job_templates', []))
+    create_job_templates(data.get('app_mode', 'devops'), org, jenkins_user, team, credentials,
+                         inventories, projects, data.get('job_templates', []))
 
 
 def get_inventories_from_job_related_resources(job_related_resources):
