@@ -20,10 +20,12 @@ import string
 import random
 import re
 import json
+from urlparse import urlparse
 import yaml
 
 import tower_cli
 import requests
+import github
 
 from paramiko.rsakey import RSAKey
 
@@ -36,11 +38,17 @@ command can be :
 load    Load data from a given file to Ansible Tower
 dump    Dump data from Ansible Tower to a given file
 '''
+DEFAULT_PLAYBOOK_CONTENT = '''
+---
+- hosts: all
+  tasks: []
+'''
 BSC_ORG = 'BSC'
 SSH_KEY_BITS = 2048
 PROJECT_SYNC_WAIT_TIME = 15
 EDGE_DEFAULT_USER = 'automation'
 APP_MGMT_MODE = ['legacy', 'devops']
+GITHUB_TEAM_VISIBLE = 'closed'
 ROLE_TYPES = ['admin', 'read', 'member', 'owner', 'execute', 'adhoc', 'update', 'use', 'auditor']
 RESOURCE_TYPES = ['project', 'inventory', 'job_template', 'credential']
 ORG_RES = tower_cli.get_resource('organization')
@@ -187,6 +195,25 @@ def find_jenkins_user(users):
         if username.lower().startswith('jenkins_'):
             return username
     return None
+
+
+def get_github_repo(gh, repo_url, create=False):
+    if repo_url is None:
+        return None
+
+    url = urlparse(repo_url)
+    org_name = url.path.split('/')[-2]
+    repo_name = url.path.split('/')[-1]
+
+    try:
+        gh_org = gh.get_organization(org_name)
+        repo = gh_org.get_repo(repo_name)
+    except github.UnknownObjectException:
+        repo = None
+        if create:
+            repo = gh_org.create_repo(name=repo_name)
+
+    return repo
 
 
 def validate(data):
@@ -757,10 +784,66 @@ def create_users(userlist):
         yield new_user
 
 
-def create_projects(app_mode, org, user, team, projects):
+def create_projects(app_mode, gh_token, gh_api_url, org, user, team, projects):
     print()
+
+    gh = github.MainClass.Github(gh_token, base_url=gh_api_url)
+    upstream_repos = []
+    for prj in projects:
+        prj['scm_url'] = re.sub('.git$', '', prj.get('scm_url'))
+        if 'forked_from' in prj:
+            prj['forked_from'] = re.sub('.git$', '', prj.get('forked_from'))
+            upstream_repos.append(prj.get('forked_from'))
+
     prj_dev_regex = re.compile(r'PROJECT_[A-Z0-9]{3}D')
     for prj in projects:
+        url = urlparse(prj.get('scm_url'))
+        repo_org_name = url.path.split('/')[-2]
+        repo_name = url.path.split('/')[-1]
+        repo_url = prj.get('scm_url')
+
+        gh_org = gh.get_organization(repo_org_name)
+
+        if repo_url not in upstream_repos:
+            gh_team = None
+            for t in gh_org.get_teams():
+                if t.name == team.name:
+                    green('GitHub Team {} already exists'.format(team.name))
+                    gh_team = t
+                    break
+            if gh_team is None:
+                gray('Creating GitHub team {}...'.format(team.name), end='')
+                gh_team = gh_org.create_team(name=team.name, privacy=GITHUB_TEAM_VISIBLE)
+                green('ok')
+
+        repo = get_github_repo(gh, repo_url)
+        if repo:
+            yellow('GitHub Repo {} already exists. Skipping...'.format(repo.full_name))
+        else:
+            parent_repo = get_github_repo(gh, prj.get('forked_from'), create=True)
+            if parent_repo:
+                try:
+                    commit = parent_repo.get_commits()[0]
+                    yellow('There is at least one commit ({}), do not create a new one.'
+                           .format(commit.sha))
+                except github.GithubException:
+                    parent_repo.create_file('/deploy.yml', 'Initial Release',
+                                            DEFAULT_PLAYBOOK_CONTENT)
+                gray('GitHub Repo {}/{} not found. Forking from {}...'.format(
+                    repo_org_name, repo_name, prj.get('forked_from')), end='')
+                repo = gh_org.create_fork(parent_repo)
+                green('ok')
+            else:
+                gray('GitHub Repo {}/{} not found. Creating...'.format(repo_org_name, repo_name))
+                repo = gh_org.create_repo(name=repo_name)
+                green('ok')
+
+        if repo_url not in upstream_repos:
+            gray('GitHub Setting admin permission to {} on {}...'.format(gh_team.name,
+                                                                         repo.full_name), end='')
+            gh_team.set_repo_permission(repo, 'admin')
+            green('ok')
+
         gray('Creating project {name}...'.format(**prj), end='')
         prj.update(dict(scm_type=prj.get('scm_type', 'git'),
                         organization=org.id,
@@ -918,7 +1001,15 @@ def tower_load(data):
         jenkins_user = users[find_jenkins_user(users)]
     except KeyError:
         jenkins_user = None
-    for new_prj in create_projects(app_mode, org, jenkins_user, team, data.get('projects', [])):
+
+    gh_token = tower_cli.conf.settings.__getattr__('github_token')
+    gh_api_url = tower_cli.conf.settings.__getattr__('github_api_url')
+    if gh_api_url is None or gh_token is None:
+        red('Missing github_token and/or github_api_url settings in your tower_cli configuration')
+        return
+
+    for new_prj in create_projects(app_mode, gh_token, gh_api_url, org, jenkins_user,
+                                   team, data.get('projects', [])):
         projects[new_prj.name] = new_prj
     for new_cred in create_credentials(app_mode, org, jenkins_user, team,
                                        data.get('credentials', [])):
