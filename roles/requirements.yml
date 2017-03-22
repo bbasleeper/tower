@@ -1,2 +1,13 @@
 ---
-
+- src: git@github.com:bbasleeper/role_dummy.git
+  name: my_dummy_role
+  scm: git
+  version: v1.0.0
+- src: git@github.com:bbasleeper/role_dummy_2.git
+  name: my_dummy_role2
+  scm: git
+  version: v1.0.0
+- src: git@github.com:bbasleeper/role_dummy_3.git
+  name: my_dummy_role3
+  scm: git
+  version: v1.0.0
